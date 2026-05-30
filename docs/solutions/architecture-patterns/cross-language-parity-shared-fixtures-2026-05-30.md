@@ -1,7 +1,7 @@
 ---
 title: "Cross-language logic parity via shared golden fixtures"
 date: 2026-05-30
-module: pear-core
+module: kiem-core
 problem_type: architecture_pattern
 component: testing_framework
 severity: high
@@ -24,11 +24,11 @@ tags:
 
 ## Summary
 
-When the same logic is implemented in two languages because of an architecture split — here a Rust core (`pear-core`) plus a standalone pure-Swift editor package (Pulp) — "don't duplicate the logic" and "keep the package standalone" are mutually exclusive. The resolution is **one authority + verified parity**: one side is authoritative for anything persisted/synced, and a shared language-neutral fixture file run by *both* test suites makes the two implementations provably equal without sharing code. A reconciliation test guards a vendored copy against drift.
+When the same logic is implemented in two languages because of an architecture split — here a Rust core (`kiem-core`) plus a standalone pure-Swift editor package (Pulp) — "don't duplicate the logic" and "keep the package standalone" are mutually exclusive. The resolution is **one authority + verified parity**: one side is authoritative for anything persisted/synced, and a shared language-neutral fixture file run by *both* test suites makes the two implementations provably equal without sharing code. A reconciliation test guards a vendored copy against drift.
 
 ## Context
 
-Pear's core is Rust (`pear-core`) — cross-platform and authoritative for anything persisted or synced. The editor is **Pulp**, a standalone pure-Swift package with no Rust dependency, deliberately shippable on its own. Both must derive a note's **title**, **tags**, and **unchecked-todo** state from the same Markdown body text, and both must produce **identical** results — otherwise the same note shows one title in the editor and a different title after a sync round-trip.
+Kiem's core is Rust (`kiem-core`) — cross-platform and authoritative for anything persisted or synced. The editor is **Pulp**, a standalone pure-Swift package with no Rust dependency, deliberately shippable on its own. Both must derive a note's **title**, **tags**, and **unchecked-todo** state from the same Markdown body text, and both must produce **identical** results — otherwise the same note shows one title in the editor and a different title after a sync round-trip.
 
 The two obvious goals can't both hold:
 
@@ -42,7 +42,7 @@ So the question is not "how do we avoid two implementations" but "how do we keep
 Adopt a **one-authority + verified-parity** pattern with three principles.
 
 **1. Authority — one side owns the truth.**
-For any value that is persisted or synced, exactly one implementation is authoritative; the other is a display-only mirror the authoritative side never trusts. In Pear, Rust is authoritative. The Swift editor derives title/tags locally for instant UI feedback, but those values are never written back — the bridge sends only the raw body and lets Rust re-derive:
+For any value that is persisted or synced, exactly one implementation is authoritative; the other is a display-only mirror the authoritative side never trusts. In Kiem, Rust is authoritative. The Swift editor derives title/tags locally for instant UI feedback, but those values are never written back — the bridge sends only the raw body and lets Rust re-derive:
 
 ```
 // Swift editor → core: send the body text, NOT the locally-derived title/tags.
@@ -65,7 +65,7 @@ Share a **language-neutral fixture file** pinning inputs to expected outputs. Bo
 ```
 
 ```rust
-// crates/pear-core/tests/content_fixtures.rs
+// crates/kiem-core/tests/content_fixtures.rs
 for case in load("fixtures/content-derivation.json") {
     assert_eq!(derive_title(&case.input), case.title);
     assert_eq!(extract_tags(&case.input), case.tags);
@@ -130,7 +130,7 @@ Strong additional signals: the logic is **pure** (input → output, cheap to cap
 **Before — "we'll keep them in sync" (the anti-pattern):**
 
 ```
-pear-core (Rust):   extract_tags()        →  uses  c == ' ' || c == '\t'
+kiem-core (Rust):   extract_tags()        →  uses  c == ' ' || c == '\t'
 Pulp (Swift):       ContentAnalyzer.tags  →  uses  \s  (matches NBSP, U+3000…)
 
 Test reality:
@@ -144,9 +144,9 @@ Test reality:
 **After — shared fixture contract + reconciliation:**
 
 ```
-pear-app/fixtures/content-derivation.json   ← canonical (inputs → expected)
+kiem-app/fixtures/content-derivation.json   ← canonical (inputs → expected)
         │
-        ├── pear-app/crates/pear-core/tests/content_fixtures.rs  loads + asserts (own repo)
+        ├── kiem-app/crates/kiem-core/tests/content_fixtures.rs  loads + asserts (own repo)
         ├── pulp/Tests/.../ContentFixtureTests.swift             loads + asserts (vendored copy, own repo)
         └── CI / sync step: vendored copy == canonical (not an in-source cross-repo test)
 
@@ -176,7 +176,7 @@ To change any derivation rule:
   2. edit Swift implementation
   3. edit canonical fixtures/content-derivation.json
   4. re-run the sync step to re-vendor the copy into Pulp
-  5. run cargo test (in pear-app) && swift test (in pulp)  — both green
+  5. run cargo test (in kiem-app) && swift test (in pulp)  — both green
   6. CI diffs the two copies (the cross-repo check lives here, not in-source)
 Skip a code/fixture step → that repo's suite goes red. Skip the sync → CI goes red.
 ```

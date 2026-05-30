@@ -1,13 +1,13 @@
 ---
-title: "Pear/Pulp Markdown format contract"
+title: "Kiem/Pulp Markdown format contract"
 type: spec
 status: living
 updated: 2026-05-29
 ---
 
-# Pear/Pulp Markdown format contract
+# Kiem/Pulp Markdown format contract
 
-The exact Markdown subset that Pulp renders and that Pear derives metadata from.
+The exact Markdown subset that Pulp renders and that Kiem derives metadata from.
 This document is the human-readable spec; the **derivation rules** (title, tags,
 unchecked todos) additionally have an executable contract in
 [`fixtures/content-derivation.json`](../../fixtures/content-derivation.json),
@@ -15,7 +15,7 @@ which both implementations run as tests.
 
 It is GitHub-Flavored-Markdown-ish, deliberately narrowed. It is **not** CommonMark
 and does not aim to be — it is the set of forms Pulp tokenizes for inline rendering
-plus the forms Pear indexes.
+plus the forms Kiem indexes.
 
 ## Implementations
 
@@ -24,13 +24,13 @@ Two implementations exist today; both must agree on everything marked
 
 | Concern | Implementation | Language | Role |
 |---|---|---|---|
-| Inline rendering grammar (tokens) | `MarkdownTokenizer` / `MarkdownStyler` | Swift (Pulp) | Single implementation — Pear embeds Pulp, does not re-tokenize |
+| Inline rendering grammar (tokens) | `MarkdownTokenizer` / `MarkdownStyler` | Swift (Pulp) | Single implementation — Kiem embeds Pulp, does not re-tokenize |
 | Title / tags / todos derivation | `ContentAnalyzer` | Swift (Pulp) | Mirror — convenience for standalone Pulp |
-| Title / tags / todos derivation | `pear_core::content` | Rust (Pear) | **Authority** — what Pear persists, indexes, and syncs |
+| Title / tags / todos derivation | `kiem_core::content` | Rust (Kiem) | **Authority** — what Kiem persists, indexes, and syncs |
 
 **Source-of-truth rule:** for any persisted or synced value (the note's
 `metadata.title` and `metadata.tags`), the **Rust** derivation is authoritative.
-Pulp's Swift derivation is never trusted by Pear; it exists so Pulp works as a
+Pulp's Swift derivation is never trusted by Kiem; it exists so Pulp works as a
 standalone package. The two are kept in lockstep by the shared fixtures, not by
 sharing code (see [the plan's Tier-1 decision](../plans/2026-05-24-001-feat-pear-notes-app-plan.md)).
 
@@ -216,12 +216,12 @@ contract existed.
 canonical, language-neutral encoding of the NORMATIVE derivation rules. Each case is
 `{ name, input, title, tags, hasUncheckedTodos }`.
 
-- `pear_core`'s `tests/content_fixtures.rs` runs every case and asserts the Rust
+- `kiem_core`'s `tests/content_fixtures.rs` runs every case and asserts the Rust
   output matches.
 - Pulp's `Tests/PulpTests/ContentFixtureTests.swift` runs every case (parameterized)
   and asserts the Swift output matches.
 - Pulp vendors a byte-identical copy of the fixtures (so it stays standalone);
-  `pear_core` has a reconciliation test that the copy has not drifted.
+  `kiem_core` has a reconciliation test that the copy has not drifted.
 
 **To change a derivation rule:** edit both implementations, edit the canonical
 fixtures, re-vendor the copy into `pulp/Tests/PulpTests/Fixtures/`, and run both test

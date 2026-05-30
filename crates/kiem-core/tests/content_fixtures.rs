@@ -1,4 +1,4 @@
-//! Validates `pear-core`'s content derivation against the shared, language-neutral
+//! Validates `kiem-core`'s content derivation against the shared, language-neutral
 //! fixture contract (`fixtures/content-derivation.json`). Pulp's Swift
 //! `ContentAnalyzer` runs the same contract against its own vendored copy in the
 //! Pulp repo. Each project tests itself against the contract; keeping the two
@@ -19,7 +19,7 @@ struct ContentFixture {
 }
 
 fn workspace_root() -> PathBuf {
-    // crates/pear-core -> workspace root
+    // crates/kiem-core -> workspace root
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -43,19 +43,19 @@ fn derivation_matches_shared_contract() {
 
     for f in &fixtures {
         assert_eq!(
-            pear_core::content::derive_title(&f.input),
+            kiem_core::content::derive_title(&f.input),
             f.title,
             "title mismatch for fixture `{}`",
             f.name
         );
         assert_eq!(
-            pear_core::content::extract_tags(&f.input),
+            kiem_core::content::extract_tags(&f.input),
             f.tags,
             "tags mismatch for fixture `{}`",
             f.name
         );
         assert_eq!(
-            pear_core::content::has_unchecked_todos(&f.input),
+            kiem_core::content::has_unchecked_todos(&f.input),
             f.has_unchecked_todos,
             "unchecked-todo mismatch for fixture `{}`",
             f.name
