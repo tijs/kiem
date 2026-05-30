@@ -1,0 +1,12 @@
+[package]
+name = "pear-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pear core library: shared note logic that is the single source of truth across CLI, FFI, and app surfaces."
+
+[dependencies]
+regex = "1"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

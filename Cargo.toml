@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/pear-core"]
+
+# Pear workspace. Tier 1 bootstraps `pear-core` with the shared content-derivation
+# rules (the single source of truth for note title + tags). Phases 1+ expand this
+# crate (Automerge model, SQLite, search) and add `pear-cli` / `pear-ffi` members.

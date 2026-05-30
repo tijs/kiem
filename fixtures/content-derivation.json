@@ -1,0 +1,219 @@
+[
+  {
+    "name": "h1_heading",
+    "input": "# My Title\nSome body text",
+    "title": "My Title",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "plain_first_line",
+    "input": "Just a plain line\nMore text",
+    "title": "Just a plain line",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "empty",
+    "input": "",
+    "title": "",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "title_trims_h1_spacing",
+    "input": "#   Spaced Title  ",
+    "title": "Spaced Title",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tags_basic",
+    "input": "Hello #project and #ideas here",
+    "title": "Hello #project and #ideas here",
+    "tags": ["project", "ideas"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tags_excluded_in_fenced_code",
+    "input": "Some text\n```\n#not_a_tag\n```\nReal #tag here",
+    "title": "Some text",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tags_excluded_in_inline_code",
+    "input": "Use `#not_a_tag` but #real is",
+    "title": "Use `#not_a_tag` but #real is",
+    "tags": ["real"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "nested_tag",
+    "input": "Check #work/meetings for details",
+    "title": "Check #work/meetings for details",
+    "tags": ["work/meetings"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "no_duplicate_tags",
+    "input": "Tag #project and again #project",
+    "title": "Tag #project and again #project",
+    "tags": ["project"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "heading_marker_not_tag",
+    "input": "# Heading\n#not a tag at line start",
+    "title": "Heading",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "title_skips_leading_table",
+    "input": "| Column 1 | Column 2 |\n| --- | --- |\n| a | b |\n\n# Real Title",
+    "title": "Real Title",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "title_skips_blank_lines",
+    "input": "\n\n  Actual line",
+    "title": "Actual line",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "unchecked_todo",
+    "input": "- [ ] task",
+    "title": "- [ ] task",
+    "tags": [],
+    "hasUncheckedTodos": true
+  },
+  {
+    "name": "checked_todo",
+    "input": "- [x] done",
+    "title": "- [x] done",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "no_todo_plain",
+    "input": "no tasks here",
+    "title": "no tasks here",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "cjk_emoji_title",
+    "input": "# 日本語 🎉 Title\nbody with #tag1",
+    "title": "日本語 🎉 Title",
+    "tags": ["tag1"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "multi_hash_not_stripped",
+    "input": "## Subheading only",
+    "title": "## Subheading only",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_underscore_number",
+    "input": "see #v2_release notes",
+    "title": "see #v2_release notes",
+    "tags": ["v2_release"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_preceded_by_tab",
+    "input": "note\t#tabbed",
+    "title": "note\t#tabbed",
+    "tags": ["tabbed"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_preceded_by_nbsp",
+    "input": "word #tag",
+    "title": "word #tag",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_preceded_by_ideographic_space",
+    "input": "語　#tag",
+    "title": "語　#tag",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tags_order_preserved",
+    "input": "x #alpha and #beta and #gamma",
+    "title": "x #alpha and #beta and #gamma",
+    "tags": ["alpha", "beta", "gamma"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_before_punctuation",
+    "input": "see #project, also #idea.",
+    "title": "see #project, also #idea.",
+    "tags": ["project", "idea"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "nested_tag_multi_slash",
+    "input": "see #work/meetings/2025 today",
+    "title": "see #work/meetings/2025 today",
+    "tags": ["work/meetings/2025"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "inline_code_whole_line",
+    "input": "`#nope`",
+    "title": "`#nope`",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tilde_fence_excludes_tags",
+    "input": "prose\n~~~\n#not_a_tag\n~~~\nreal #tag here",
+    "title": "prose",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "info_string_fence_excludes_tags",
+    "input": "prose\n```rust\nlet x = 1; // #nope\n```\ndone #yes",
+    "title": "prose",
+    "tags": ["yes"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "unterminated_fence_does_not_exclude",
+    "input": "prose\n```\ntext #inside more\nno closing fence",
+    "title": "prose",
+    "tags": ["inside"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "mismatched_fence_chars_do_not_pair",
+    "input": "prose\n```\nx #a\n~~~\ny #b",
+    "title": "prose",
+    "tags": ["a", "b"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "crlf_title_and_tag",
+    "input": "# My Title\r\nBody with #tag",
+    "title": "My Title",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "title_leading_nbsp_trimmed",
+    "input": "  Title here",
+    "title": "Title here",
+    "tags": [],
+    "hasUncheckedTodos": false
+  }
+]

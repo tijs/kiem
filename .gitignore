@@ -1,0 +1,15 @@
+# Local-only: plan docs are treated as local build artifacts, not versioned.
+/docs/plans/
+
+# Rust
+/target/
+
+# macOS
+.DS_Store
+
+# Xcode / SwiftPM (the Apple app lands under apple/ in a later phase)
+.build/
+DerivedData/
+xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
