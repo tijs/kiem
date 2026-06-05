@@ -77,4 +77,7 @@ derivation logic, preserve these:
 - File-size limit: 500 lines — split into modules at the limit.
 - `docs/plans/` is **gitignored** (treated as local build artifacts). Don't expect plan
   files to be tracked here; they still exist on disk and are the roadmap.
+- `docs/solutions/` — documented solutions to past problems (bugs, architecture/design
+  patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`).
+  Relevant when implementing or debugging in documented areas (incl. Pulp rendering).
 - Dated doc filenames keep their historical `pear-` prefix; new files use `kiem`.

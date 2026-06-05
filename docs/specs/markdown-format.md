@@ -48,7 +48,6 @@ unless noted.
 | Element | Recognized form | Regex |
 |---|---|---|
 | Heading (H1–H6) | `#`…`######` + whitespace, then text | `^(#{1,6})\s+` |
-| Setext heading | a text line, then an underline of only `=` (H1) or only `-` (H2) | underline `^=+\s*$` / `^-+\s*$` |
 | Task item | `- [ ]` / `- [x]` / `- [X]` (leading indent allowed) | `^(\s*- \[)([ xX])(\]\s)` |
 | Unordered list item | `-`, `*`, or `+` + space (indent allowed) | `^(\s*[-*+]\s)` |
 | Ordered list item | `1.` + space (indent allowed) | `^(\s*)(\d+\.\s)` |
@@ -63,9 +62,9 @@ unless noted.
 Task items are matched before plain list items so `- [ ]` is never double-counted
 as a bullet. **List indentation is depth-proportional**: leading whitespace is read
 as nesting depth (2 spaces or 1 tab per level) and the renderer indents each level
-further — bullet, ordered, and task items alike. A `-` underline is only a setext
-heading when the line above is non-blank, non-structural text; otherwise it stays a
-horizontal rule, and a `| --- |` line stays a table separator.
+further — bullet, ordered, and task items alike. Only ATX headings (`#`…`######`)
+are supported; **setext headings** (`===` / `---` underlines) are not — a `---` line
+is a horizontal rule and a `| --- |` line is a table separator.
 
 ## Inline elements (RENDER-ONLY grammar)
 
@@ -238,6 +237,8 @@ Tracked in the plan's Pulp remaining-work list, not in this contract:
 - **Math typesetting** — `$…$` / `$$…$$` render as styled raw LaTeX, not typeset.
 - **Reference-link / footnote resolution** — `[text][ref]`, `[^id]` are styled, but
   definitions are not resolved and markers are not clickable/jump-to.
+- **Setext headings** (`===` / `---` underlines) — intentionally unsupported (Bear
+  ignores them too); use ATX `#` headings. A `---` line renders as a horizontal rule.
 - Definition lists.
 - Heading folding, list indentation via Tab (authoring gesture — distinct from the
   depth-proportional *rendering* of already-indented lists, which is supported).
