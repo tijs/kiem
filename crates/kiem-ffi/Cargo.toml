@@ -9,3 +9,8 @@ crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
 kiem-core = { path = "../kiem-core" }
+thiserror = "2"
+uniffi = "0.31.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"
