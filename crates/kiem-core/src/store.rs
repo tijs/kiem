@@ -24,6 +24,7 @@ use time::OffsetDateTime;
 
 use crate::content;
 use crate::note::{NoteDoc, NoteMetadata};
+use crate::search::{SearchError, SearchIndex, SearchResult};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -37,10 +38,17 @@ pub enum StoreError {
     /// reconcile. Recovery (rebuild from a peer) is a later concern.
     #[error("document error for note {id}: {message}")]
     Document { id: String, message: String },
+    #[error(transparent)]
+    Search(#[from] SearchError),
+    #[error("search is not enabled for this store (open it with open_dir)")]
+    SearchDisabled,
+    #[error("data directory error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub struct NoteStore {
     conn: Connection,
+    search: Option<SearchIndex>,
 }
 
 const SCHEMA: &str = "
@@ -63,21 +71,38 @@ const META_COLUMNS: &str =
     "id, title, tags, author_did, note_type, pinned, deleted, created_at, modified_at";
 
 impl NoteStore {
-    /// Open (or create) a store at `path`. WAL mode for concurrent readers.
+    /// Open (or create) the full data directory: `kiem.db` plus the `search/`
+    /// index. This is what CLI/app surfaces use.
+    pub fn open_dir(data_dir: &Path) -> Result<Self, StoreError> {
+        std::fs::create_dir_all(data_dir)?;
+        let mut store = Self::open(&data_dir.join("kiem.db"))?;
+        store.search = Some(SearchIndex::open_in_dir(&data_dir.join("search"))?);
+        Ok(store)
+    }
+
+    /// Open (or create) a bare store at a database path — no search index.
+    /// WAL mode for concurrent readers.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         Self::init(conn)
     }
 
-    /// In-memory store for tests.
+    /// In-memory store for tests (no search index).
     pub fn open_in_memory() -> Result<Self, StoreError> {
         Self::init(Connection::open_in_memory()?)
     }
 
+    /// In-memory store with an in-RAM search index, for tests.
+    pub fn open_in_memory_with_search() -> Result<Self, StoreError> {
+        let mut store = Self::init(Connection::open_in_memory()?)?;
+        store.search = Some(SearchIndex::in_memory()?);
+        Ok(store)
+    }
+
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.execute_batch(SCHEMA)?;
-        Ok(NoteStore { conn })
+        Ok(NoteStore { conn, search: None })
     }
 
     /// Create a note from body text; id and timestamps are generated.
@@ -115,7 +140,38 @@ impl NoteStore {
         if inserted == 0 {
             return Err(StoreError::DuplicateId(m.id.clone()));
         }
+        if let Some(index) = &mut self.search {
+            if !m.deleted {
+                index.index_note(m, note.body.as_str())?;
+            }
+        }
         Ok(m.clone())
+    }
+
+    /// Full-text search over title, body, and tags of live (non-deleted)
+    /// notes. Requires a store opened with [`open_dir`](Self::open_dir).
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, StoreError> {
+        let index = self.search.as_ref().ok_or(StoreError::SearchDisabled)?;
+        Ok(index.search(query, limit)?)
+    }
+
+    /// Recovery path: drop the search index contents and re-feed every live
+    /// note from SQLite (the index is derived, never authoritative).
+    pub fn rebuild_search_index(&mut self) -> Result<(), StoreError> {
+        if self.search.is_none() {
+            return Err(StoreError::SearchDisabled);
+        }
+        let metas = self.list_notes()?;
+        let mut entries = Vec::with_capacity(metas.len());
+        for meta in metas {
+            let note = self
+                .get_note(&meta.id)?
+                .ok_or_else(|| StoreError::NotFound(meta.id.clone()))?;
+            entries.push((meta, note.body.as_str().to_owned()));
+        }
+        let index = self.search.as_mut().expect("checked above");
+        index.rebuild(entries.iter().map(|(m, b)| (m, b.as_str())))?;
+        Ok(())
     }
 
     /// Raw Automerge document bytes (the persisted source of truth). The sync
@@ -234,7 +290,14 @@ impl NoteStore {
                 doc.save(),
             ],
         )?;
-        Ok(m.clone())
+        if let Some(index) = &mut self.search {
+            if note.metadata.deleted {
+                index.remove_note(&note.metadata.id)?;
+            } else {
+                index.index_note(&note.metadata, note.body.as_str())?;
+            }
+        }
+        Ok(note.metadata)
     }
 
     fn load_doc(&self, id: &str) -> Result<Option<AutoCommit>, StoreError> {

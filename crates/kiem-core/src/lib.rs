@@ -10,4 +10,5 @@
 
 pub mod content;
 pub mod note;
+pub mod search;
 pub mod store;

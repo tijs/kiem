@@ -159,16 +159,78 @@ fn smart_filters_todo_untagged_pinned_today() {
 }
 
 #[test]
+fn search_is_integrated_with_writes() {
+    let mut store = NoteStore::open_in_memory_with_search().unwrap();
+    let a = store.create_note("# Alpha\n\nthe walrus rests", DID).unwrap();
+    let b = store.create_note("# Beta\n\nabout #gardening", DID).unwrap();
+
+    // create → searchable, with metadata flowing through
+    let hits = store.search("walrus", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].note_id, a.id);
+    assert_eq!(hits[0].title, "Alpha");
+
+    // tags are searchable
+    assert_eq!(store.search("gardening", 10).unwrap()[0].note_id, b.id);
+
+    // update → old content gone, new content found
+    store.update_note(&a.id, "# Alpha\n\nthe narwhal swims").unwrap();
+    assert!(store.search("walrus", 10).unwrap().is_empty());
+    assert_eq!(store.search("narwhal", 10).unwrap()[0].note_id, a.id);
+
+    // soft delete → out of results; restore → back
+    store.delete_note(&a.id).unwrap();
+    assert!(store.search("narwhal", 10).unwrap().is_empty());
+    store.restore_note(&a.id).unwrap();
+    assert_eq!(store.search("narwhal", 10).unwrap().len(), 1);
+}
+
+#[test]
+fn search_on_searchless_store_is_an_explicit_error() {
+    let store = store_with(&[]);
+    assert!(matches!(
+        store.search("anything", 10),
+        Err(StoreError::SearchDisabled)
+    ));
+}
+
+#[test]
+fn rebuild_restores_a_wiped_index() {
+    let mut store = NoteStore::open_in_memory_with_search().unwrap();
+    store.create_note("# Kept\n\nfindable zebra", DID).unwrap();
+    let trashed = store.create_note("# Trash\n\nhidden okapi", DID).unwrap();
+    store.delete_note(&trashed.id).unwrap();
+
+    store.rebuild_search_index().unwrap();
+    assert_eq!(store.search("zebra", 10).unwrap().len(), 1);
+    assert!(store.search("okapi", 10).unwrap().is_empty(), "deleted notes stay out");
+}
+
+#[test]
+fn search_scales_to_a_hundred_notes() {
+    let mut store = NoteStore::open_in_memory_with_search().unwrap();
+    for i in 0..100 {
+        store
+            .create_note(&format!("# Note {i}\n\nfiller text number{i}"), DID)
+            .unwrap();
+    }
+    let hits = store.search("number42", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].title, "Note 42");
+}
+
+#[test]
 fn persists_across_open_close() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("kiem.db");
     let id = {
-        let mut store = NoteStore::open(&path).unwrap();
+        let mut store = NoteStore::open_dir(dir.path()).unwrap();
         store.create_note("# Durable\n\nkept #keep", DID).unwrap().id
     };
-    let store = NoteStore::open(&path).unwrap();
+    let store = NoteStore::open_dir(dir.path()).unwrap();
     let loaded = store.get_note(&id).unwrap().expect("note survives reopen");
     assert_eq!(loaded.metadata.title, "Durable");
     assert_eq!(loaded.metadata.tags, vec!["keep"]);
     assert_eq!(loaded.body.as_str(), "# Durable\n\nkept #keep");
+    // the search index persisted too — no reindex needed after reopen
+    assert_eq!(store.search("kept", 10).unwrap()[0].note_id, id);
 }
