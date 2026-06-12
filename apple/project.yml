@@ -1,0 +1,34 @@
+# xcodegen spec for the Kiem macOS app. Regenerate with:
+#   cd apple && xcodegen generate
+# Prerequisite: apple/build-kiemkit.sh (KiemKit is generated, gitignored).
+name: Kiem
+options:
+  bundleIdPrefix: org.tijs
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  KiemKit:
+    path: KiemKit
+  PulpEditor:
+    path: ../../pulp
+targets:
+  Kiem:
+    type: application
+    platform: macOS
+    sources: [Kiem]
+    dependencies:
+      - package: KiemKit
+        product: KiemKit
+      - package: PulpEditor
+        product: Pulp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.tijs.kiem
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: "5.9"
+        # Dev builds run unsandboxed: the app shares ~/.kiem with the CLI.
+        ENABLE_APP_SANDBOX: NO
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        INFOPLIST_KEY_NSMainStoryboardFile: ""

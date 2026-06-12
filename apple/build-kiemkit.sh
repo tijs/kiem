@@ -7,6 +7,10 @@ set -eu
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_root/crates/kiem-ffi"
 
+# Match the app's deployment target so the linker doesn't warn about every
+# object file in the staticlib (project.yml sets 14.0 too).
+export MACOSX_DEPLOYMENT_TARGET=14.0
+
 # cargo-swift writes ./KiemKit relative to the crate; move it into apple/.
 cargo swift package --platforms macos --name KiemKit --accept-all --silent "$@"
 rm -rf "$repo_root/apple/KiemKit"
