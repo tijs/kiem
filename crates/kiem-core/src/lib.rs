@@ -10,3 +10,4 @@
 
 pub mod content;
 pub mod note;
+pub mod store;
