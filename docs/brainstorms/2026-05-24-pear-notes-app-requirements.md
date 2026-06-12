@@ -171,6 +171,33 @@ The gap is a notes app where human and AI writers share the same notes, sync hap
 - **Zero-configuration networking:** No relay mode toggle, no server setup, no pairing flow. Peers auto-discover and sync. Always-on sync emerges from topology (an always-on device is just a peer that never disconnects), not from configuration
 - **Early spike for cross-network:** Rather than deferring cross-network sync blindly, a proof-of-concept spike runs early to validate the DID-auth + encrypted WebSocket + Automerge sync integration. This derisks the deferred work without pulling full cross-network UX into v1
 
+### Decision revisited 2026-06-12: Rust core reaffirmed
+
+After Phase 0 (Pulp) shipped, the Rust-core decision was deliberately re-examined
+against two observations: (1) substantial platform-specific code is still required
+regardless (the editor), and (2) Swift's cross-platform story has matured (official
+Android SDK in Swift 6.3, mature Linux support for CLI/daemons). **Outcome: the Rust
+core stays.** What changed is the stated rationale:
+
+- **The load-bearing justification is the always-on CLI/agent peer on Linux (R16,
+  R20), not hypothetical Android/Linux clients.** The home-server CLI peer is the
+  primary personal use case beyond the Apple apps.
+- **A Swift core cannot serve that surface today:** there is no pure-Swift Automerge.
+  `automerge-swift` is a UniFFI binding over the same Rust core, supports only
+  iOS/macOS/visionOS, and explicitly does not support Linux. Switching to a Swift
+  core would not remove Rust from the stack — it would hide an uncontrolled copy of
+  it behind a binding while losing the Linux CLI entirely.
+- **The editor is a wash in this decision:** Pulp is platform-specific UI code under
+  either architecture (SwiftUI does not exist on Android/Linux; an Android editor
+  would be Compose work regardless of core language).
+- **Linux/Android clients remain community-hoped, not roadmap.** The reusable core
+  may eventually stand as its own clearly-bounded open-source project; `kiem-core`
+  is kept publishable (no app-specific assumptions), but a repo split is deferred
+  until an external consumer exists.
+- Consequence for verification: because development happens on macOS while the
+  headline use case is a Linux CLI peer, Linux builds are verified continuously
+  from Phase 2 onward rather than as an end-state acceptance check.
+
 ---
 
 ## Dependencies / Assumptions
