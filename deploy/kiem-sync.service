@@ -1,0 +1,14 @@
+# Systemd unit for the Kiem sync daemon on an always-on home server.
+# See deploy/README.md for installation.
+[Unit]
+Description=Kiem notes sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/kiem sync --listen 0.0.0.0:7464
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -84,7 +84,24 @@ impl NoteStore {
     /// WAL mode for concurrent readers.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Several processes share one database (sync daemon + one-shot CLI
+        // commands): wait out writer locks instead of failing with BUSY.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // The rollback→WAL switch needs exclusive access and reports BUSY
+        // without consulting the busy handler, so two processes opening a
+        // fresh store race here. WAL is persistent in the file: whoever wins
+        // sets it once; losers succeed on a later attempt (then it's a no-op).
+        let mut attempts = 0;
+        loop {
+            match conn.pragma_update(None, "journal_mode", "WAL") {
+                Ok(()) => break,
+                Err(err) if is_busy(&err) && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
         Self::init(conn)
     }
 
@@ -258,6 +275,47 @@ impl NoteStore {
         self.query_meta("deleted = 1", params![])
     }
 
+    /// Every note id including trashed notes — sync replicates everything.
+    pub fn list_all_ids(&self) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT id FROM notes ORDER BY id")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Persist a document that changed outside the normal edit path (sync
+    /// receive). Inserts or fully replaces the row from the document's own
+    /// hydrated state and keeps the search index in step.
+    pub fn put_doc(&mut self, doc: &mut AutoCommit) -> Result<NoteMetadata, StoreError> {
+        let note: NoteDoc = hydrate(doc).map_err(|e| document_err("(sync)", e))?;
+        let m = &note.metadata;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO notes
+             (id, title, tags, author_did, note_type, pinned, deleted, has_todos, created_at, modified_at, doc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                m.id,
+                m.title,
+                tags_json(&m.tags),
+                m.author_did,
+                m.note_type,
+                m.pinned,
+                m.deleted,
+                content::has_unchecked_todos(note.body.as_str()),
+                m.created_at,
+                m.modified_at,
+                doc.save(),
+            ],
+        )?;
+        if let Some(index) = &mut self.search {
+            if m.deleted {
+                index.remove_note(&m.id)?;
+            } else {
+                index.index_note(m, note.body.as_str())?;
+            }
+        }
+        Ok(note.metadata)
+    }
+
     /// Every tag on live notes with its usage count, alphabetical.
     pub fn list_tags(&self) -> Result<Vec<(String, usize)>, StoreError> {
         let mut stmt = self.conn.prepare("SELECT tags FROM notes WHERE deleted = 0")?;
@@ -351,6 +409,13 @@ fn row_to_meta(row: &Row<'_>) -> rusqlite::Result<NoteMetadata> {
 
 fn tags_json(tags: &[String]) -> String {
     serde_json::to_string(tags).expect("a Vec<String> always serializes to JSON")
+}
+
+fn is_busy(err: &rusqlite::Error) -> bool {
+    matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
 }
 
 fn document_err(id: &str, e: impl std::fmt::Display) -> StoreError {

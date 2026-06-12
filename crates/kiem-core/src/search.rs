@@ -47,12 +47,15 @@ struct Fields {
 
 pub struct SearchIndex {
     index: Index,
-    writer: IndexWriter,
     reader: IndexReader,
     fields: Fields,
 }
 
 const WRITER_HEAP_BYTES: usize = 15_000_000;
+/// tantivy's writer lock is exclusive per process; a daemon and a one-shot
+/// CLI command can collide briefly, so writer acquisition retries.
+const WRITER_LOCK_RETRIES: u32 = 40;
+const WRITER_LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl SearchIndex {
     /// Open (or create) a persistent index in `dir`.
@@ -86,30 +89,26 @@ impl SearchIndex {
             body: schema.get_field("body")?,
             tags: schema.get_field("tags")?,
         };
-        let writer = index.writer(WRITER_HEAP_BYTES)?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        Ok(SearchIndex { index, writer, reader, fields })
+        Ok(SearchIndex { index, reader, fields })
     }
 
     /// Index (or re-index) one note. Delete-by-id + add + commit.
     pub fn index_note(&mut self, meta: &NoteMetadata, body: &str) -> Result<(), SearchError> {
-        self.delete(&meta.id);
-        let mut doc = TantivyDocument::default();
-        doc.add_text(self.fields.note_id, &meta.id);
-        doc.add_text(self.fields.title, &meta.title);
-        doc.add_text(self.fields.body, body);
-        doc.add_text(self.fields.tags, meta.tags.join(" "));
-        self.writer.add_document(doc)?;
-        self.commit()
+        let writer = self.writer()?;
+        writer.delete_term(Term::from_field_text(self.fields.note_id, &meta.id));
+        writer.add_document(self.make_doc(meta, body))?;
+        self.commit(writer)
     }
 
     /// Drop one note from the index (deletion, or hiding trashed notes).
     pub fn remove_note(&mut self, id: &str) -> Result<(), SearchError> {
-        self.delete(id);
-        self.commit()
+        let writer = self.writer()?;
+        writer.delete_term(Term::from_field_text(self.fields.note_id, id));
+        self.commit(writer)
     }
 
     /// Replace the entire index contents (recovery path; the store re-feeds
@@ -118,16 +117,12 @@ impl SearchIndex {
         &mut self,
         notes: impl Iterator<Item = (&'a NoteMetadata, &'a str)>,
     ) -> Result<(), SearchError> {
-        self.writer.delete_all_documents()?;
+        let writer = self.writer()?;
+        writer.delete_all_documents()?;
         for (meta, body) in notes {
-            let mut doc = TantivyDocument::default();
-            doc.add_text(self.fields.note_id, &meta.id);
-            doc.add_text(self.fields.title, &meta.title);
-            doc.add_text(self.fields.body, body);
-            doc.add_text(self.fields.tags, meta.tags.join(" "));
-            self.writer.add_document(doc)?;
+            writer.add_document(self.make_doc(meta, body))?;
         }
-        self.commit()
+        self.commit(writer)
     }
 
     /// Search title, body, and tags. Empty/whitespace queries return nothing.
@@ -163,13 +158,34 @@ impl SearchIndex {
         Ok(results)
     }
 
-    fn delete(&mut self, id: &str) {
-        self.writer
-            .delete_term(Term::from_field_text(self.fields.note_id, id));
+    /// Writers are opened per operation (not held) so several processes —
+    /// the sync daemon plus one-shot CLI commands — can share an index dir.
+    /// The exclusive lock is only contended for the duration of one write.
+    fn writer(&self) -> Result<IndexWriter, SearchError> {
+        let mut attempts = 0;
+        loop {
+            match self.index.writer(WRITER_HEAP_BYTES) {
+                Ok(writer) => return Ok(writer),
+                Err(tantivy::TantivyError::LockFailure(..)) if attempts < WRITER_LOCK_RETRIES => {
+                    attempts += 1;
+                    std::thread::sleep(WRITER_LOCK_BACKOFF);
+                }
+                Err(other) => return Err(other.into()),
+            }
+        }
     }
 
-    fn commit(&mut self) -> Result<(), SearchError> {
-        self.writer.commit()?;
+    fn make_doc(&self, meta: &NoteMetadata, body: &str) -> TantivyDocument {
+        let mut doc = TantivyDocument::default();
+        doc.add_text(self.fields.note_id, &meta.id);
+        doc.add_text(self.fields.title, &meta.title);
+        doc.add_text(self.fields.body, body);
+        doc.add_text(self.fields.tags, meta.tags.join(" "));
+        doc
+    }
+
+    fn commit(&mut self, mut writer: IndexWriter) -> Result<(), SearchError> {
+        writer.commit()?;
         self.reader.reload()?;
         Ok(())
     }

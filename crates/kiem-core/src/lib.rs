@@ -10,5 +10,7 @@
 
 pub mod content;
 pub mod note;
+pub mod protocol;
 pub mod search;
 pub mod store;
+pub mod sync;

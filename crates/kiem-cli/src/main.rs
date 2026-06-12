@@ -6,6 +6,8 @@
 //! the body per the content contract, so `--title` is sugar that prepends an
 //! H1 heading line.
 
+mod daemon;
+
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 
@@ -66,6 +68,24 @@ enum Command {
     Tags,
     /// Move a note to trash (soft delete)
     Delete { id: String },
+    /// Run the sync daemon (foreground): discover peers, keep notes converged
+    Sync {
+        /// Listen address (port 0 = ephemeral)
+        #[arg(long, default_value = "0.0.0.0:0")]
+        listen: String,
+        /// Direct peer address to dial (repeatable); used by tests and
+        /// fixed-address setups like a home server
+        #[arg(long)]
+        connect: Vec<String>,
+        /// Disable mDNS discovery (direct connections only)
+        #[arg(long)]
+        no_mdns: bool,
+        /// Sync round interval in milliseconds
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+    },
+    /// Show the running daemon's peers and state
+    SyncStatus,
 }
 
 fn main() {
@@ -83,6 +103,21 @@ fn run() -> Result<()> {
             .context("cannot determine home directory; pass --data-dir")?
             .join(".kiem"),
     };
+    // The daemon owns its store (long-lived); sync-status needs none.
+    match cli.command {
+        Command::Sync { listen, connect, no_mdns, interval_ms } => {
+            return daemon::run(daemon::Options {
+                data_dir,
+                listen,
+                connect,
+                mdns: !no_mdns,
+                interval: std::time::Duration::from_millis(interval_ms.max(100)),
+            });
+        }
+        Command::SyncStatus => return daemon::print_status(&data_dir, cli.json),
+        _ => {}
+    }
+
     let mut store = NoteStore::open_dir(&data_dir)
         .with_context(|| format!("opening data directory {}", data_dir.display()))?;
 
@@ -170,6 +205,7 @@ fn run() -> Result<()> {
                 println!("Deleted: {} ({})", display_title(&meta), meta.id);
             }
         }
+        Command::Sync { .. } | Command::SyncStatus => unreachable!("handled above"),
     }
     Ok(())
 }
