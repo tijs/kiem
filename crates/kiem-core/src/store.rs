@@ -258,6 +258,19 @@ impl NoteStore {
         self.query_meta("deleted = 1", params![])
     }
 
+    /// Every tag on live notes with its usage count, alphabetical.
+    pub fn list_tags(&self) -> Result<Vec<(String, usize)>, StoreError> {
+        let mut stmt = self.conn.prepare("SELECT tags FROM notes WHERE deleted = 0")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut counts = std::collections::BTreeMap::new();
+        for tags_text in rows {
+            for tag in serde_json::from_str::<Vec<String>>(&tags_text?).unwrap_or_default() {
+                *counts.entry(tag).or_insert(0usize) += 1;
+            }
+        }
+        Ok(counts.into_iter().collect())
+    }
+
     // -- internals --
 
     /// Hydrate → mutate → reconcile into the *same* document, then persist.

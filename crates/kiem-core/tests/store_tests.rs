@@ -159,6 +159,20 @@ fn smart_filters_todo_untagged_pinned_today() {
 }
 
 #[test]
+fn list_tags_counts_live_notes_only() {
+    let mut store = store_with(&[
+        note("a", "# A\n\nx #shared #solo", "2026-06-10T10:00:00Z"),
+        note("b", "# B\n\ny #shared", "2026-06-10T10:00:01Z"),
+        note("c", "# C\n\nz #gone", "2026-06-10T10:00:02Z"),
+    ]);
+    store.delete_note("c").unwrap();
+    assert_eq!(
+        store.list_tags().unwrap(),
+        vec![("shared".to_owned(), 2), ("solo".to_owned(), 1)]
+    );
+}
+
+#[test]
 fn search_is_integrated_with_writes() {
     let mut store = NoteStore::open_in_memory_with_search().unwrap();
     let a = store.create_note("# Alpha\n\nthe walrus rests", DID).unwrap();

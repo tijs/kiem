@@ -25,6 +25,7 @@ pub const DEFAULT_NOTE_TYPE: &str = "note";
 
 /// Denormalized note metadata, stored as a nested Automerge map.
 #[derive(Debug, Clone, PartialEq, Eq, Reconcile, Hydrate)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct NoteMetadata {
     pub id: String,
     /// Derived from the body (first H1, else first line). Never user-set.
