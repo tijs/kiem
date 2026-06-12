@@ -1,7 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/kiem-core"]
+members = ["crates/kiem-core", "crates/kiem-cli", "crates/kiem-ffi"]
 
-# Kiem workspace. Tier 1 bootstraps `kiem-core` with the shared content-derivation
-# rules (the single source of truth for note title + tags). Phases 1+ expand this
-# crate (Automerge model, SQLite, search) and add `kiem-cli` / `kiem-ffi` members.
+# Kiem workspace: `kiem-core` (pure library — content derivation, Automerge note
+# model; SQLite + search next), `kiem-cli` (binary, U4+), `kiem-ffi` (UniFFI
+# bridge, U6+). The cli/ffi crates are placeholders until their phases land.
+# `kiem-core` stays publishable (no app-specific assumptions) — it may become a
+# standalone open-source project once an external consumer exists.

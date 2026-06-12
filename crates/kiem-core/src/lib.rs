@@ -9,3 +9,4 @@
 //! search index are always computed here, never from the editor's Swift copy.
 
 pub mod content;
+pub mod note;
