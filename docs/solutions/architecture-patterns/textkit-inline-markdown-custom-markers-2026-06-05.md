@@ -123,6 +123,47 @@ declined TCCs" / "No displays" despite Screen Recording being granted — a stal
 cached check, often an npx-vs-homebrew binary mismatch), native
 `screencapture -x -R<x,y,w,h> out.png` is the reliable fallback.
 
+**7. Once Markdown renders as a thing, delete the thing — make the marker runs
+atoms.** Reveal-on-caret-line means the *rendered* world (one checkbox) and the
+*editing* world (six source characters) disagree exactly at deletion: raw
+`NSTextView` backspace walks `- [ ] ` through broken half-syntax (`- [`) and an
+orphan `**` re-styles the rest of the line. The fix reuses the same
+`markerRanges` that drive shrinking, as a **deletion** authority this time: a
+pure resolver (`DeletionIntent`, no AppKit, so the iOS port reuses it) maps
+caret + tokens → either `.characterwise` (default) or descending `.ranges`
+applied as one undoable edit. The rules, keyed off where the caret sits relative
+to a marker run:
+- **Block prefixes** (`- [ ] `, `# `, `1. `, `> `) delete whole at content
+  start — but **keep the leading indent** (delete from end-of-indent to
+  end-of-marker, not the whole marker range, since task/bullet markers *include*
+  the indent while heading/ordered ones don't). Clamp to the line's content end
+  so an empty `- [ ] ` never eats its own newline.
+- **Inline pairs** (`**b**`, `` `c` ``, `$x$`) **unwrap** — delete *both* runs,
+  keep content. Deleting only the closing run is what strands the orphan
+  delimiter, so pairing is mandatory, not a nicety.
+- **Bracketed inlines** (link/image/ref/footnote) unwrap to the visible
+  label/alt by deleting every range in `markerRanges`; an autolink has none, so
+  delete the whole token (its text *is* the URL).
+- **Whole-line markers** (HR, fence line, multi-line `$$` line) delete the line
+  incl. newline; single-line `$$a=b$$` unwraps as a pair (mirrors point 2's
+  special case).
+- **Forward-delete mirrors**: same atoms, trigger at the *start* boundary.
+
+The escape hatch needs no mode: a caret deliberately placed *inside* a revealed
+marker run is not on a boundary, so it stays characterwise. Group the edit with
+`breakUndoCoalescing()` + `shouldChangeText(inRanges:replacementStrings:)` /
+`didChangeText()` so one ⌘Z restores the element. Two gotchas this surfaced:
+(a) **resolve against freshly tokenized text, not the cached token snapshot** —
+that snapshot is refreshed by an *async* restyle, so a synchronous edit earlier
+in the same run-loop turn (list-continuation on Return, key-repeat) leaves it
+stale and a stale range can mis-delete or overrun shortened storage; re-tokenize
+synchronously on the delete keypress (the table-commit path already does this).
+(b) A **windowless `NSTextView` resolves no undo manager** from the responder
+chain, so grouped programmatic edits register nothing — don't "fix" this by
+overriding `undoManager(for:)` to own one (that hijacks a host document app's
+undo for *all* editing); keep standard responder-chain undo and host the view in
+an offscreen `NSWindow` in headless tests to exercise the real undo path.
+
 ## Why This Matters
 
 - **One source of truth for geometry kills an entire bug class.** Every list-indent
@@ -147,6 +188,10 @@ cached check, often an npx-vs-homebrew binary mismatch), native
   attribute styling and custom `draw…` overrides — share one function.
 - Whenever you hide syntax by shrinking/recoloring rather than deleting — audit the
   exact span and clip it to the token range.
+- Whenever deletion should operate on the *rendered* element, not its source
+  characters — make marker runs atoms via the same `markerRanges`, with a pure
+  caret+tokens→ranges resolver and a boundary-only trigger (caret inside a run
+  stays characterwise).
 - Whenever an inline transform runs document-wide — define an exclusion set for regions
   it must not touch (definitions, code, frontmatter).
 - Deciding whether to support a niche construct: check the reference app (Bear); if it
