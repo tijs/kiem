@@ -1,5 +1,7 @@
-# Local-only: plan docs are treated as local build artifacts, not versioned.
+# Local-only working notes, not versioned. Plans are local build artifacts;
+# brainstorms are pre-implementation requirements notes.
 /docs/plans/
+/docs/brainstorms/
 
 # Rust
 /target/
