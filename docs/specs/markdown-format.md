@@ -151,9 +151,10 @@ is the queryable denormalization.
 - A tag matches `#` followed by an ASCII letter, then ASCII letters/digits/`_`/`/`:
   pattern `#([a-zA-Z][a-zA-Z0-9_/]*)`. The returned tag excludes the leading `#`.
 - Nested tags keep their slashes whole: `#work/meetings/2025` → `work/meetings/2025`.
-- A `#` is a tag **only if preceded by inline whitespace** (see
-  [Whitespace](#whitespace-normative)). A `#` at the start of a line is a heading
-  marker, not a tag.
+- A `#` starts a tag when it is at the **start of the document or a line, or
+  preceded by whitespace** (see [Whitespace](#whitespace-normative)). Because the
+  pattern requires a letter immediately after the `#`, a heading (`# Heading` — note
+  the space) is never a tag, while a line-start `#tag` (letter, no space) **is** a tag.
 - Tags inside [fenced code blocks](#code-fences-normative) or inline code spans are
   ignored.
 - Results are **deduplicated, preserving first-seen order**.
@@ -197,10 +198,10 @@ Two whitespace classes matter for the derivations, mirroring the Swift
   separator category (space, `U+00A0` NBSP, `U+3000` ideographic space, the
   `U+2000`–`U+200A` range, `U+202F`, `U+205F`, `U+1680`). Matches Swift
   `CharacterSet.whitespaces`. Excludes line terminators and the VT/FF controls.
-- **Tag-preceding whitespace** = any Unicode whitespace **except** line terminators
-  (`\n`, `\r`, `U+0085`, `U+2028`, `U+2029`). This is broader than horizontal
-  whitespace — it additionally accepts VT (`U+000B`) and FF (`U+000C`), matching
-  ICU regex `\s` minus the line-start cases. So `word⍽#tag` (NBSP before `#`) yields
+- **Tag-preceding position** = the start of the document/line, or any Unicode
+  whitespace **including** line terminators. Broader than horizontal whitespace — it
+  also accepts VT (`U+000B`), FF (`U+000C`), and newlines, matching ICU regex
+  `(?<=\s|^)`. So both `word⍽#tag` (NBSP before `#`) and a line-start `#tag` yield
   the tag `tag`.
 
 CJK notes routinely use ideographic/full-width spaces, so getting these classes

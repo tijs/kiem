@@ -63,10 +63,24 @@
     "hasUncheckedTodos": false
   },
   {
-    "name": "heading_marker_not_tag",
+    "name": "heading_with_space_not_tag_but_line_start_is",
     "input": "# Heading\n#not a tag at line start",
     "title": "Heading",
-    "tags": [],
+    "tags": ["not"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_after_newline",
+    "input": "intro line\n#hello world",
+    "title": "intro line",
+    "tags": ["hello"],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "tag_at_document_start",
+    "input": "#first thing\nbody",
+    "title": "#first thing",
+    "tags": ["first"],
     "hasUncheckedTodos": false
   },
   {

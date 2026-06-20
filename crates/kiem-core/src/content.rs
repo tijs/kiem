@@ -41,9 +41,10 @@ pub fn derive_title(body: &str) -> String {
 }
 
 /// Extract unique `#hashtags` from the body, in first-seen order. Tags inside
-/// fenced or inline code are ignored, and a `#` at the start of a line is treated
-/// as a heading marker rather than a tag. Nested tags (`#work/meetings`) are kept
-/// whole. The returned strings exclude the leading `#`.
+/// fenced or inline code are ignored. A tag is `#` immediately followed by a
+/// letter, so `# Heading` (a space after `#`) is a heading and never a tag — but
+/// a `#tag` at the start of a line or the document still counts. Nested tags
+/// (`#work/meetings`) are kept whole. The returned strings exclude the leading `#`.
 pub fn extract_tags(body: &str) -> Vec<String> {
     let normalized = normalize_newlines(body);
     let body = normalized.as_str();
@@ -54,14 +55,14 @@ pub fn extract_tags(body: &str) -> Vec<String> {
         let whole = caps.get(0).expect("group 0 always present");
         let start = whole.start();
 
-        // Swift uses `(?<=\s|^)#…` then drops matches at line start (those are
-        // heading markers). Equivalent: the `#` must be preceded by whitespace
-        // that is not a line terminator — see `is_tag_preceding_ws`. A `#` at
-        // start-of-string (no preceding char) is likewise a heading marker.
-        let preceded_ok = body[..start]
-            .chars()
-            .next_back()
-            .is_some_and(is_tag_preceding_ws);
+        // Mirror Swift's `(?<=\s|^)#…`: the `#` must be at the start of the
+        // string or preceded by whitespace — and a line terminator counts, so a
+        // line-start `#tag` is a tag. Headings are already excluded by the regex,
+        // which requires a letter right after `#`, so `# Heading` never matches.
+        let preceded_ok = match body[..start].chars().next_back() {
+            None => true,
+            Some(c) => c.is_whitespace(),
+        };
         if !preceded_ok {
             continue;
         }
@@ -104,14 +105,6 @@ fn is_horizontal_ws(c: char) -> bool {
                 c,
                 '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
             ))
-}
-
-/// Whitespace that may precede a hashtag, matching Swift regex `\s` minus the
-/// line terminators that the line-start (heading-marker) exclusion removes. This
-/// is broader than `is_horizontal_ws` — it additionally accepts VT/FF, which
-/// ICU `\s` matches and which are not line boundaries.
-fn is_tag_preceding_ws(c: char) -> bool {
-    c.is_whitespace() && !matches!(c, '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')
 }
 
 fn trim_horizontal_ws(s: &str) -> &str {
@@ -232,8 +225,17 @@ mod tests {
     }
 
     #[test]
-    fn tag_at_line_start_is_heading_marker() {
-        assert!(extract_tags("#nota tag").is_empty());
+    fn tag_at_line_start_is_extracted() {
+        // A `#` + letter at the start of a line/document is a tag (only `# ` with
+        // a space is a heading).
+        assert_eq!(extract_tags("#nota tag"), vec!["nota"]);
+        assert_eq!(extract_tags("intro\n#hello world"), vec!["hello"]);
+    }
+
+    #[test]
+    fn heading_with_space_is_not_a_tag() {
+        assert!(extract_tags("# Heading\nbody").is_empty());
+        assert!(extract_tags("## Section").is_empty());
     }
 
     #[test]
