@@ -40,6 +40,10 @@ final class KiemModel {
     /// source of truth; the store mirrors it on every change.
     var editorText: String = ""
 
+    /// The body last loaded into the editor. Lets `editorTextDidChange`
+    /// distinguish a programmatic load (no write needed) from a real user edit.
+    private var loadedBody = ""
+
     init(dataDir: URL) throws {
         store = try KiemStore.open(dataDir: dataDir.path)
         refresh()
@@ -113,6 +117,13 @@ final class KiemModel {
     /// Editor change → Rust (re-derives title/tags) → refresh metadata.
     func editorTextDidChange() {
         guard let id = selectedNoteID else { return }
+        // Loading a note assigns `editorText` programmatically, which also fires
+        // this handler. Skip when nothing actually changed: otherwise every
+        // note-open re-derives + persists metadata (bumping modified_at and, with
+        // a mismatched embedded core, clobbering data). See
+        // docs/solutions/integration-issues/stale-prebuilt-kiemkit-xcframework-clobbers-tags-2026-06-20.md
+        guard editorText != loadedBody else { return }
+        loadedBody = editorText
         report { try store.updateNote(id: id, body: editorText) }
         refreshNotes()
         refreshSidebar()
@@ -122,9 +133,13 @@ final class KiemModel {
         guard let id = selectedNoteID,
               let note = report({ try store.getNote(id: id) }) ?? nil
         else {
+            loadedBody = ""
             editorText = ""
             return
         }
+        // Set `loadedBody` before `editorText` so the change handler the
+        // assignment triggers sees them equal and skips the write.
+        loadedBody = note.body
         editorText = note.body
     }
 
