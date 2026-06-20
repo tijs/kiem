@@ -1,6 +1,7 @@
 ---
 title: "Cross-language logic parity via shared golden fixtures"
 date: 2026-05-30
+last_updated: 2026-06-20
 module: kiem-core
 problem_type: architecture_pattern
 component: testing_framework
@@ -181,7 +182,16 @@ To change any derivation rule:
 Skip a code/fixture step → that repo's suite goes red. Skip the sync → CI goes red.
 ```
 
+**Blind spot — compiled/vendored artifacts.** This workflow keeps two *source*
+implementations in lockstep, verified by tests. It does **not** catch a stale *binary*
+that embeds one of them: the macOS app links a prebuilt `KiemKit` XCFramework, and
+`xcodebuild` won't regenerate it, so every source and fixture test can be green while the
+app runs a months-old copy of the rule and silently clobbers data on note open. Add
+"rebuild the embedded artifact (`apple/build-kiemkit.sh`)" as a step whenever a
+derivation rule changes — see the Related doc below.
+
 ## Related
 
 - [docs/specs/markdown-format.md](../../specs/markdown-format.md) — the canonical, living spec of the derivation rules and the RENDER-ONLY vs NORMATIVE contract this pattern enforces.
 - [docs/plans/2026-05-24-001-feat-pear-notes-app-plan.md](../../plans/2026-05-24-001-feat-pear-notes-app-plan.md) — the Rust-core/Swift-UI architecture split and the Tier-based shared-logic boundary decision that motivated this pattern.
+- [Stale prebuilt KiemKit XCFramework clobbers note tags on open](../integration-issues/stale-prebuilt-kiemkit-xcframework-clobbers-tags-2026-06-20.md) — the *source-to-artifact* counterpart to this *source-to-source* contract: a real instance of the binary blind spot above, where every parity test was green but the app's embedded core was stale.

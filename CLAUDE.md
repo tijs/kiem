@@ -56,9 +56,13 @@ fixture file:
 
 **To change any derivation rule:** edit the Rust impl, edit the Swift impl in `../pulp`,
 edit `fixtures/content-derivation.json`, re-vendor the copy into
-`../pulp/Tests/PulpTests/Fixtures/`, and run both test suites. There is deliberately
-**no cross-repo filesystem test** here — each repo tests its own copy; keeping them in
-sync is a release/CI concern.
+`../pulp/Tests/PulpTests/Fixtures/`, run both test suites, **and rebuild the app's
+embedded core with `apple/build-kiemkit.sh`** (a plain `xcodebuild` does NOT regenerate
+the gitignored `apple/KiemKit/` XCFramework, so the app keeps running the old rule and
+silently clobbers metadata when a note is opened — see
+`docs/solutions/integration-issues/stale-prebuilt-kiemkit-xcframework-clobbers-tags-2026-06-20.md`).
+There is deliberately **no cross-repo filesystem test** here — each repo tests its own
+copy; keeping them in sync is a release/CI concern.
 
 ### Rust ↔ Swift porting gotchas (already cost real bugs)
 
