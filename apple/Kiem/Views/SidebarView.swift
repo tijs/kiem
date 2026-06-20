@@ -1,30 +1,67 @@
 import SwiftUI
 
-/// Tag navigation. Smart filters (Todo/Today/Untagged/Pinned/Trash) join
-/// this sidebar in U12; for now: All Notes + the tag list with counts.
+/// Sidebar navigation: All Notes, the built-in smart filters, and the tag list
+/// with counts. Selecting any row drives `KiemModel.refreshNotes()`.
 struct SidebarView: View {
     @Bindable var model: KiemModel
 
     var body: some View {
-        List(selection: $model.selectedTag) {
+        // `List` single-selection wants an optional binding; the model's
+        // selection is never absent (All Notes is a real value), so map nil
+        // back to `.allNotes`.
+        let selection = Binding<SidebarSelection?>(
+            get: { model.selection },
+            set: { model.selection = $0 ?? .allNotes }
+        )
+
+        List(selection: selection) {
             Label("All Notes", systemImage: "note.text")
-                .tag(String?.none)
+                .tag(SidebarSelection.allNotes)
+
+            Section("Filters") {
+                ForEach(SmartFilter.allCases) { filter in
+                    SidebarRow(
+                        title: filter.title,
+                        systemImage: filter.systemImage,
+                        count: model.filterCounts[filter]
+                    )
+                    .tag(SidebarSelection.filter(filter))
+                }
+            }
 
             if !model.tags.isEmpty {
                 Section("Tags") {
                     ForEach(model.tags, id: \.tag) { entry in
-                        HStack {
-                            Label(entry.tag, systemImage: "number")
-                            Spacer()
-                            Text("\(entry.count)")
-                                .foregroundStyle(.secondary)
-                                .monospacedDigit()
-                        }
-                        .tag(String?.some(entry.tag))
+                        SidebarRow(
+                            title: entry.tag,
+                            systemImage: "number",
+                            count: Int(entry.count)
+                        )
+                        .tag(SidebarSelection.tag(entry.tag))
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+    }
+}
+
+/// A sidebar row: an icon-labelled title with an optional trailing count. The
+/// count is hidden when zero so empty filters stay quiet.
+private struct SidebarRow: View {
+    let title: String
+    let systemImage: String
+    let count: Int?
+
+    var body: some View {
+        HStack {
+            Label(title, systemImage: systemImage)
+            Spacer()
+            if let count, count > 0 {
+                Text("\(count)")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
     }
 }

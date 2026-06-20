@@ -15,10 +15,21 @@ final class KiemModel {
 
     private(set) var notes: [NoteMetadata] = []
     private(set) var tags: [TagCount] = []
+    /// Live match counts per smart filter, shown beside its sidebar row.
+    private(set) var filterCounts: [SmartFilter: Int] = [:]
     var errorMessage: String?
 
-    var selectedTag: String? {
+    var selection: SidebarSelection = .allNotes {
         didSet { refreshNotes() }
+    }
+
+    /// Empty-list heading for the current selection.
+    var emptyNotesTitle: String {
+        switch selection {
+        case .allNotes: "No notes yet"
+        case let .tag(tag): "No notes tagged #\(tag)"
+        case let .filter(filter): filter.emptyTitle
+        }
     }
 
     var selectedNoteID: String? {
@@ -46,20 +57,36 @@ final class KiemModel {
 
     func refresh() {
         refreshNotes()
-        tags = report { try store.getTags() } ?? []
+        refreshSidebar()
     }
 
     func refreshNotes() {
-        let listed: [NoteMetadata]? = report {
-            if let tag = selectedTag {
-                try store.listByTag(tag: tag)
-            } else {
-                try store.listNotes()
-            }
-        }
+        let listed: [NoteMetadata]? = report { try notes(for: selection) }
         notes = listed ?? []
         if let selected = selectedNoteID, !notes.contains(where: { $0.id == selected }) {
             selectedNoteID = nil
+        }
+    }
+
+    /// The note list backing a sidebar selection. Each case maps to a dedicated
+    /// `KiemStore` query; the filtering itself lives in the Rust core.
+    private func notes(for selection: SidebarSelection) throws -> [NoteMetadata] {
+        switch selection {
+        case .allNotes: try store.listNotes()
+        case let .tag(tag): try store.listByTag(tag: tag)
+        case .filter(.todo): try store.listTodos()
+        case .filter(.today): try store.listToday()
+        case .filter(.untagged): try store.listUntagged()
+        case .filter(.pinned): try store.listPinned()
+        case .filter(.trash): try store.listDeleted()
+        }
+    }
+
+    /// Refresh the sidebar's tag list and smart-filter counts.
+    private func refreshSidebar() {
+        tags = report { try store.getTags() } ?? []
+        filterCounts = SmartFilter.allCases.reduce(into: [:]) { counts, filter in
+            counts[filter] = report { try notes(for: .filter(filter)).count } ?? 0
         }
     }
 
@@ -88,7 +115,7 @@ final class KiemModel {
         guard let id = selectedNoteID else { return }
         report { try store.updateNote(id: id, body: editorText) }
         refreshNotes()
-        tags = report { try store.getTags() } ?? []
+        refreshSidebar()
     }
 
     private func loadSelectedNote() {

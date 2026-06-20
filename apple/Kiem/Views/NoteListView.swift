@@ -8,7 +8,7 @@ struct NoteListView: View {
         Group {
             if model.notes.isEmpty {
                 ContentUnavailableView(
-                    model.selectedTag.map { "No notes tagged #\($0)" } ?? "No notes yet",
+                    model.emptyNotesTitle,
                     systemImage: "note.text",
                     description: Text("Create a note with ⌘N.")
                 )
