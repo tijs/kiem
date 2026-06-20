@@ -17,7 +17,11 @@ final class KiemModel {
     private(set) var tags: [TagCount] = []
     /// Live match counts per smart filter, shown beside its sidebar row.
     private(set) var filterCounts: [SmartFilter: Int] = [:]
+    /// Peers currently linked for sync (drives the sync-status UI in U13).
+    private(set) var connectedPeers: [ConnectedPeer] = []
     var errorMessage: String?
+
+    private var peerManager: PeerManager?
 
     var selection: SidebarSelection = .allNotes {
         didSet { refreshNotes() }
@@ -47,6 +51,32 @@ final class KiemModel {
     init(dataDir: URL) throws {
         store = try KiemStore.open(dataDir: dataDir.path)
         refresh()
+        startSync()
+    }
+
+    /// Begin P2P sync: discover peers on the local network and converge notes,
+    /// the same Bonjour service (`_kiem._tcp`) the CLI daemon uses.
+    private func startSync() {
+        let manager = PeerManager(store: store, localPeerId: Self.peerID())
+        manager.onPeersChanged = { [weak self] peers in
+            Task { @MainActor in self?.connectedPeers = peers }
+        }
+        manager.start()
+        peerManager = manager
+    }
+
+    /// Stable peer id for this install. `KIEM_PEER_ID` overrides it so several
+    /// instances can run on one machine during development (otherwise they'd
+    /// share UserDefaults, see the same id, and treat each other as self).
+    private static func peerID() -> String {
+        if let override = ProcessInfo.processInfo.environment["KIEM_PEER_ID"], !override.isEmpty {
+            return override
+        }
+        let key = "org.tijs.kiem.peerID"
+        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
+        let fresh = UUID().uuidString
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
     }
 
     /// Default data directory — the same one the CLI uses, so the app and
