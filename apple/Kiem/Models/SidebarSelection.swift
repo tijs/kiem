@@ -47,4 +47,6 @@ enum SidebarSelection: Hashable {
     case allNotes
     case filter(SmartFilter)
     case tag(String)
+    /// A project, identified by its full reserved tag (`proj/<slug>`).
+    case project(String)
 }

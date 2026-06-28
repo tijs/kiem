@@ -176,3 +176,93 @@ fn show_and_edit_unknown_id_fail_with_message() {
         .failure()
         .stderr(predicate::str::contains("note not found: no-such-id"));
 }
+
+// -- projects & agent loop (U4, U5) --
+
+/// A kiem command run with both a data dir and a working directory (for project
+/// resolution from the `.kiem` marker / directory name).
+fn kiem_in(data_dir: &Path, work_dir: &Path) -> Command {
+    let mut cmd = kiem(data_dir);
+    cmd.current_dir(work_dir);
+    cmd
+}
+
+fn json_out(cmd: &mut Command) -> serde_json::Value {
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "command failed: {}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn project_current_resolves_marker_then_dirname() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    // No marker → slugified directory name.
+    let from_name = json_out(kiem_in(data.path(), repo.path()).args(["project", "current", "--json"]));
+    assert!(from_name["project"].as_str().unwrap().starts_with("proj/"));
+
+    // `project add` writes the marker; `current` then resolves to it.
+    kiem_in(data.path(), repo.path()).args(["project", "add", "Demo Project"]).assert().success();
+    let from_marker = json_out(kiem_in(data.path(), repo.path()).args(["project", "current", "--json"]));
+    assert_eq!(from_marker["project"], "proj/demo_project");
+    assert!(repo.path().join(".kiem").is_file(), "marker committed to repo");
+    assert!(repo.path().join("AGENTS.md").is_file(), "AGENTS.md pointer written");
+}
+
+#[test]
+fn project_add_is_idempotent_no_duplicate_home_note() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    let first = json_out(kiem_in(data.path(), repo.path()).args(["project", "add", "Demo", "--json"]));
+    assert!(first["home_note"].is_string(), "first add creates a home note");
+
+    let second = json_out(kiem_in(data.path(), repo.path()).args(["project", "add", "Demo", "--json"]));
+    assert!(second["home_note"].is_null(), "re-add binds without a second home note");
+
+    // Exactly one project, one note.
+    let projects = json_out(kiem_in(data.path(), repo.path()).args(["project", "list", "--json"]));
+    assert_eq!(projects.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn agent_loop_add_note_list_todos_then_check() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path()).args(["project", "add", "Demo"]).assert().success();
+
+    // Add a note with two open todos.
+    let note = json_out(
+        kiem_in(data.path(), repo.path())
+            .args(["note", "add", "# Tasks\n- [ ] first\n- [ ] second", "--json"]),
+    );
+    let note_id = note["id"].as_str().unwrap().to_owned();
+
+    // `todos` aggregates the project's open items (home note has none).
+    let todos = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
+    let items = todos.as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["note_id"], note_id.as_str());
+    assert_eq!(items[0]["index"], 0);
+
+    // Check the first todo → it drops out of the aggregate.
+    kiem(data.path()).args(["todo", "check", &note_id, "0"]).assert().success();
+    let after = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
+    assert_eq!(after.as_array().unwrap().len(), 1);
+    assert_eq!(after[0]["text"], "second");
+}
+
+#[test]
+fn todo_check_bad_index_fails() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path()).args(["project", "add", "Demo"]).assert().success();
+    let note = json_out(
+        kiem_in(data.path(), repo.path()).args(["note", "add", "# T\n- [ ] only", "--json"]),
+    );
+    let note_id = note["id"].as_str().unwrap().to_owned();
+    kiem(data.path())
+        .args(["todo", "check", &note_id, "9"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("out of range"));
+}

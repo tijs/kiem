@@ -71,6 +71,20 @@ pub struct TagCount {
     pub count: u64,
 }
 
+#[derive(Debug, uniffi::Record)]
+pub struct ProjectTodo {
+    pub note_id: String,
+    /// Position among the note's checkboxes — its address for `set_todo_checked`.
+    pub index: u32,
+    pub text: String,
+}
+
+impl From<kiem_core::store::ProjectTodo> for ProjectTodo {
+    fn from(t: kiem_core::store::ProjectTodo) -> Self {
+        ProjectTodo { note_id: t.note_id, index: t.index as u32, text: t.text }
+    }
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum KiemError {
     #[error("note not found: {id}")]
@@ -197,6 +211,28 @@ impl KiemStore {
         })
     }
 
+    /// All unchecked todo items across the project's notes (by tag), each with a
+    /// (note_id, index) address.
+    pub fn list_todo_items_for_tag(&self, tag: String) -> Result<Vec<ProjectTodo>, KiemError> {
+        self.with(|store, _| {
+            Ok(store
+                .list_todo_items_for_tag(&tag)?
+                .into_iter()
+                .map(Into::into)
+                .collect())
+        })
+    }
+
+    /// Toggle the checkbox at `index` within note `note_id`, persisting the edit.
+    pub fn set_todo_checked(
+        &self,
+        note_id: String,
+        index: u32,
+        checked: bool,
+    ) -> Result<NoteMetadata, KiemError> {
+        self.with(|store, _| Ok(store.set_todo_checked(&note_id, index as usize, checked)?.into()))
+    }
+
     pub fn search(&self, query: String, limit: u32) -> Result<Vec<SearchResult>, KiemError> {
         self.with(|store, _| {
             Ok(store
@@ -273,6 +309,24 @@ mod tests {
         store.delete_note(meta.id.clone()).unwrap();
         assert!(store.list_notes().unwrap().is_empty());
         assert_eq!(store.list_deleted().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn project_todos_aggregate_and_toggle_through_the_ffi_surface() {
+        let (_dir, store) = open_temp();
+        let note = store
+            .create_note("# Tasks #proj/demo\n- [ ] a\n- [ ] b".into(), "did:key:test".into())
+            .unwrap();
+
+        let todos = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
+        assert_eq!(todos.len(), 2);
+        assert_eq!(todos[0].note_id, note.id);
+        assert_eq!(todos[0].index, 0);
+
+        store.set_todo_checked(note.id.clone(), 0, true).unwrap();
+        let after = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].text, "b");
     }
 
     #[test]

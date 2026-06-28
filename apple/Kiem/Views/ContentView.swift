@@ -3,6 +3,8 @@ import SwiftUI
 /// Three-column layout: sidebar (tags) / note list / editor.
 struct ContentView: View {
     @Bindable var model: KiemModel
+    @State private var showingNewProject = false
+    @State private var newProjectName = ""
 
     var body: some View {
         NavigationSplitView {
@@ -17,11 +19,28 @@ struct ContentView: View {
         .navigationTitle(model.selectedNote?.title ?? "Kiem")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
+                Button("New Project", systemImage: "folder.badge.plus") {
+                    newProjectName = ""
+                    showingNewProject = true
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            ToolbarItem(placement: .primaryAction) {
                 Button("New Note", systemImage: "square.and.pencil") {
                     model.createNote()
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
+        }
+        .alert("New Project", isPresented: $showingNewProject) {
+            TextField("Project name", text: $newProjectName)
+            Button("Create") {
+                let name = newProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty { model.createProject(name: name) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Creates a project. To let an agent work in a repo, run “kiem project add” there.")
         }
         .alert(
             "Something went wrong",

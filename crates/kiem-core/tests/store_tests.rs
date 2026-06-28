@@ -248,3 +248,59 @@ fn persists_across_open_close() {
     // the search index persisted too — no reindex needed after reopen
     assert_eq!(store.search("kept", 10).unwrap()[0].note_id, id);
 }
+
+#[test]
+fn project_todos_aggregate_across_tagged_notes_excluding_others() {
+    let store = store_with(&[
+        note("a", "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2", "2026-06-28T10:00:00Z"),
+        note("b", "# B #proj/x\n- [ ] b1", "2026-06-28T11:00:00Z"),
+        note("c", "# C #other\n- [ ] not-in-project", "2026-06-28T12:00:00Z"),
+    ]);
+    let todos = store.list_todo_items_for_tag("proj/x").unwrap();
+    // Only the two project notes' *unchecked* items, note-list order (b before a:
+    // more recently modified) then document order.
+    let texts: Vec<_> = todos.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts, vec!["b1", "a1", "a2"]);
+    assert!(todos.iter().all(|t| t.note_id == "a" || t.note_id == "b"));
+}
+
+#[test]
+fn set_todo_checked_removes_item_from_aggregate_and_keeps_tags() {
+    let mut store = store_with(&[note(
+        "a",
+        "# A #proj/x\n- [ ] keep\n- [ ] finish",
+        "2026-06-28T10:00:00Z",
+    )]);
+    let before = store.list_todo_items_for_tag("proj/x").unwrap();
+    assert_eq!(before.len(), 2);
+
+    let meta = store.set_todo_checked("a", 1, true).unwrap();
+    assert_eq!(meta.tags, vec!["proj/x"], "tags re-derived intact");
+
+    let after = store.list_todo_items_for_tag("proj/x").unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].text, "keep");
+    // the underlying note body actually flipped
+    let body = store.get_note("a").unwrap().unwrap().body.as_str().to_owned();
+    assert!(body.contains("- [x] finish"));
+}
+
+#[test]
+fn project_todos_empty_when_no_tagged_notes() {
+    let store = store_with(&[]);
+    assert!(store.list_todo_items_for_tag("proj/none").unwrap().is_empty());
+}
+
+#[test]
+fn set_todo_checked_errors_on_missing_note_or_bad_index() {
+    let mut store = store_with(&[note("a", "# A #proj/x\n- [ ] only", "2026-06-28T10:00:00Z")]);
+    assert!(matches!(
+        store.set_todo_checked("ghost", 0, true),
+        Err(StoreError::NotFound(_))
+    ));
+    // out-of-range index surfaces as a document error
+    assert!(matches!(
+        store.set_todo_checked("a", 9, true),
+        Err(StoreError::Document { .. })
+    ));
+}

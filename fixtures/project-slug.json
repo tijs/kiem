@@ -1,0 +1,14 @@
+{
+  "_comment": "Language-neutral parity contract for project name -> proj/<slug> derivation. The Rust CLI (crates/kiem-cli/src/project.rs to_tag/slugify) and the Swift app (apple/Kiem/Models/KiemModel.swift projectTag(for:)) must produce byte-identical `tag` for each `input`. Rule: lowercase ASCII A-Z only; keep [a-z0-9/]; space/-/_ become a single _; collapse repeats; trim leading/trailing _; non-ASCII is dropped; an empty slug yields an empty tag. See docs/specs/kiem-project-marker.md and docs/solutions/architecture-patterns/cross-language-parity-shared-fixtures-2026-05-30.md.",
+  "cases": [
+    { "input": "Kiem App", "tag": "proj/kiem_app" },
+    { "input": "  My__Cool  Project!! ", "tag": "proj/my_cool_project" },
+    { "input": "work/meetings", "tag": "proj/work/meetings" },
+    { "input": "proj/kiem_app", "tag": "proj/kiem_app" },
+    { "input": "ALREADY-Hyphen_Mixed", "tag": "proj/already_hyphen_mixed" },
+    { "input": "İstanbul", "tag": "proj/stanbul" },
+    { "input": "Café Notes", "tag": "proj/caf_notes" },
+    { "input": "!!!", "tag": "" },
+    { "input": "   ", "tag": "" }
+  ]
+}

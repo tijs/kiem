@@ -51,6 +51,17 @@ pub struct NoteStore {
     search: Option<SearchIndex>,
 }
 
+/// One unchecked todo item belonging to a project's notes. The `(note_id, index)`
+/// pair is its address — `index` is the item's position among checkboxes within
+/// that note (see [`content::extract_todo_items`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct ProjectTodo {
+    pub note_id: String,
+    pub index: usize,
+    pub text: String,
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS notes (
     id          TEXT PRIMARY KEY,
@@ -327,6 +338,41 @@ impl NoteStore {
             }
         }
         Ok(counts.into_iter().collect())
+    }
+
+    /// All unchecked todo items across live notes carrying `tag`, in note-list
+    /// order (most recently modified first) then document order. Each item's
+    /// `(note_id, index)` addresses it for [`set_todo_checked`](Self::set_todo_checked).
+    pub fn list_todo_items_for_tag(&self, tag: &str) -> Result<Vec<ProjectTodo>, StoreError> {
+        let mut out = Vec::new();
+        for meta in self.list_by_tag(tag)? {
+            let note = self
+                .get_note(&meta.id)?
+                .ok_or_else(|| StoreError::NotFound(meta.id.clone()))?;
+            for item in content::extract_todo_items(note.body.as_str()) {
+                if !item.checked {
+                    out.push(ProjectTodo { note_id: meta.id.clone(), index: item.index, text: item.text });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Toggle the checkbox at `index` within note `id` and persist. Goes through
+    /// the normal body-update path, so title/tags/`modified_at` re-derive and the
+    /// change splices into the existing Automerge document (sync-safe).
+    pub fn set_todo_checked(
+        &mut self,
+        id: &str,
+        index: usize,
+        checked: bool,
+    ) -> Result<NoteMetadata, StoreError> {
+        let note = self
+            .get_note(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let new_body = content::set_todo_checked(note.body.as_str(), index, checked)
+            .map_err(|e| document_err(id, e))?;
+        self.update_note(id, &new_body)
     }
 
     // -- internals --

@@ -16,6 +16,24 @@ targets:
     type: application
     platform: macOS
     sources: [Kiem]
+    # Fail loudly if the embedded Rust core (KiemKit) is older than its sources.
+    # xcodebuild can't see crates/*.rs -> KiemKit, so a stale core silently
+    # clobbers note metadata on edit. See docs/solutions/integration-issues/
+    # stale-prebuilt-kiemkit-xcframework-clobbers-tags-2026-06-20.md
+    preBuildScripts:
+      - name: Check KiemKit freshness
+        basedOnDependencyAnalysis: false
+        script: |
+          ref="$SRCROOT/KiemKit/Sources/KiemKit/kiem_ffi.swift"
+          if [ ! -f "$ref" ]; then
+            echo "error: KiemKit not built. Run apple/build-kiemkit.sh first."
+            exit 1
+          fi
+          stale=$(find "$SRCROOT/../crates" -name '*.rs' -newer "$ref" -print -quit)
+          if [ -n "$stale" ]; then
+            echo "error: Rust core changed since KiemKit was generated ($stale). The embedded core is stale and will clobber note metadata on edit. Run apple/build-kiemkit.sh, then rebuild."
+            exit 1
+          fi
     dependencies:
       - package: KiemKit
         product: KiemKit
