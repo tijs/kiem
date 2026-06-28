@@ -29,10 +29,32 @@ targets:
             echo "error: KiemKit not built. Run apple/build-kiemkit.sh first."
             exit 1
           fi
-          stale=$(find "$SRCROOT/../crates" -name '*.rs' -newer "$ref" -print -quit)
+          # Only library src compiles into KiemKit; tests/benches don't, so
+          # changing them must not trip the guard.
+          stale=$(find "$SRCROOT/../crates" -path '*/src/*' -name '*.rs' -newer "$ref" -print -quit)
           if [ -n "$stale" ]; then
             echo "error: Rust core changed since KiemKit was generated ($stale). The embedded core is stale and will clobber note metadata on edit. Run apple/build-kiemkit.sh, then rebuild."
             exit 1
+          fi
+    # Embed the kiem CLI binary into the app bundle's Resources so the in-app
+    # "Install Command Line Tool" command can symlink it onto PATH. Release builds
+    # compile the CLI fresh; Debug reuses an existing target/debug build to keep
+    # day-to-day app builds fast (building it only if absent).
+    postCompileScripts:
+      - name: Embed kiem CLI
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          dest="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          mkdir -p "$dest"
+          if [ "$CONFIGURATION" = "Release" ]; then
+            ( cd "$SRCROOT/.." && cargo build -p kiem-cli --release )
+            cp "$SRCROOT/../target/release/kiem" "$dest/kiem"
+          else
+            bin="$SRCROOT/../target/debug/kiem"
+            [ -x "$bin" ] || ( cd "$SRCROOT/.." && cargo build -p kiem-cli )
+            cp "$bin" "$dest/kiem"
           fi
     dependencies:
       - package: KiemKit
