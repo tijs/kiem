@@ -7,6 +7,7 @@
 //! H1 heading line.
 
 mod daemon;
+mod project;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -68,6 +69,33 @@ enum Command {
     Tags,
     /// Move a note to trash (soft delete)
     Delete { id: String },
+    /// Manage projects (a project is the reserved tag proj/<slug>)
+    Project {
+        #[command(subcommand)]
+        action: ProjectAction,
+    },
+    /// List the current project's open todos (note-id, index, text)
+    Todos {
+        /// Override the resolved project (a name or proj/<slug>)
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Check or uncheck a todo by its (note-id, index) address
+    Todo {
+        #[command(subcommand)]
+        action: TodoAction,
+    },
+    /// Add a note to the current project
+    Note {
+        #[command(subcommand)]
+        action: NoteAction,
+    },
+    /// List the current project's notes
+    Notes {
+        /// Override the resolved project (a name or proj/<slug>)
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Run the sync daemon (foreground): discover peers, keep notes converged
     Sync {
         /// Listen address (port 0 = ephemeral)
@@ -86,6 +114,37 @@ enum Command {
     },
     /// Show the running daemon's peers and state
     SyncStatus,
+}
+
+#[derive(Subcommand)]
+enum ProjectAction {
+    /// Register the current directory as a project: write the .kiem marker, add an
+    /// AGENTS.md pointer, and (for a new project) create a home note
+    Add { name: String },
+    /// List known projects (derived from proj/* tags with note counts)
+    List,
+    /// Print the project resolved for the current directory
+    Current,
+}
+
+#[derive(Subcommand)]
+enum TodoAction {
+    /// Mark a todo done: kiem todo check <note-id> <index>
+    Check { note_id: String, index: usize },
+    /// Mark a todo not done: kiem todo uncheck <note-id> <index>
+    Uncheck { note_id: String, index: usize },
+}
+
+#[derive(Subcommand)]
+enum NoteAction {
+    /// Add a note to the current project (tags it proj/<slug>)
+    Add {
+        /// Note text; the first line becomes the title
+        text: String,
+        /// Override the resolved project (a name or proj/<slug>)
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 fn main() {
@@ -203,6 +262,119 @@ fn run() -> Result<()> {
                 print_json(&json!({"id": meta.id, "deleted": true}))?;
             } else {
                 println!("Deleted: {} ({})", display_title(&meta), meta.id);
+            }
+        }
+        Command::Project { action } => match action {
+            ProjectAction::Add { name } => {
+                let tag = project::to_tag(&name);
+                let cwd = std::env::current_dir().context("reading current directory")?;
+                let marker = project::write_marker(&cwd, &tag)?;
+                project::ensure_agents_pointer(&cwd, &tag)?;
+                // Create a home note only if this project tag is new, so `add`
+                // is idempotent (re-binding an existing project just rewrites the marker).
+                let created = if store.list_by_tag(&tag)?.is_empty() {
+                    let body = format!("# {name}\n\nProject home.\n\n#{tag}");
+                    Some(store.create_note(&body, AUTHOR_PLACEHOLDER)?)
+                } else {
+                    None
+                };
+                if cli.json {
+                    print_json(&json!({
+                        "project": tag,
+                        "marker": marker.display().to_string(),
+                        "home_note": created.as_ref().map(|m| m.id.clone()),
+                    }))?;
+                } else {
+                    println!("Project {tag}");
+                    println!("  marker: {}", marker.display());
+                    match &created {
+                        Some(m) => println!("  home note: {}", m.id),
+                        None => println!("  (existing project — bound this directory)"),
+                    }
+                }
+            }
+            ProjectAction::List => {
+                let projects: Vec<_> = store
+                    .list_tags()?
+                    .into_iter()
+                    .filter(|(tag, _)| tag.starts_with(project::TAG_PREFIX))
+                    .collect();
+                if cli.json {
+                    let value: Vec<_> = projects
+                        .iter()
+                        .map(|(tag, notes)| json!({"project": tag, "notes": notes}))
+                        .collect();
+                    print_json(&serde_json::to_value(value)?)?;
+                } else if projects.is_empty() {
+                    println!("(no projects yet — create one with `kiem project add <name>`)");
+                } else {
+                    for (tag, notes) in &projects {
+                        println!("{tag} ({notes})");
+                    }
+                }
+            }
+            ProjectAction::Current => {
+                let cwd = std::env::current_dir().context("reading current directory")?;
+                let tag = project::resolve(&cwd, None)?;
+                if cli.json {
+                    print_json(&json!({"project": tag}))?;
+                } else {
+                    println!("{tag}");
+                }
+            }
+        },
+        Command::Todos { project: project_override } => {
+            let cwd = std::env::current_dir().context("reading current directory")?;
+            let tag = project::resolve(&cwd, project_override.as_deref())?;
+            let todos = store.list_todo_items_for_tag(&tag)?;
+            if cli.json {
+                print_json(&serde_json::to_value(&todos)?)?;
+            } else if todos.is_empty() {
+                println!("(no open todos in {tag})");
+            } else {
+                for t in &todos {
+                    println!("{}  {}  {}", t.note_id, t.index, t.text);
+                }
+            }
+        }
+        Command::Todo { action } => {
+            let (note_id, index, checked) = match action {
+                TodoAction::Check { note_id, index } => (note_id, index, true),
+                TodoAction::Uncheck { note_id, index } => (note_id, index, false),
+            };
+            let meta = store
+                .set_todo_checked(&note_id, index, checked)
+                .map_err(not_found_context(&note_id))?;
+            if cli.json {
+                print_json(&json!({"id": meta.id, "index": index, "checked": checked}))?;
+            } else {
+                let verb = if checked { "Checked" } else { "Unchecked" };
+                println!("{verb} todo {index} in {} ({})", display_title(&meta), meta.id);
+            }
+        }
+        Command::Note { action } => match action {
+            NoteAction::Add { text, project: project_override } => {
+                let cwd = std::env::current_dir().context("reading current directory")?;
+                let tag = project::resolve(&cwd, project_override.as_deref())?;
+                let body = format!("{text}\n\n#{tag}");
+                let meta = store.create_note(&body, AUTHOR_PLACEHOLDER)?;
+                if cli.json {
+                    print_json(&serde_json::to_value(&meta)?)?;
+                } else {
+                    println!("Added to {tag}: {} ({})", display_title(&meta), meta.id);
+                }
+            }
+        },
+        Command::Notes { project: project_override } => {
+            let cwd = std::env::current_dir().context("reading current directory")?;
+            let tag = project::resolve(&cwd, project_override.as_deref())?;
+            let notes = store.list_by_tag(&tag)?;
+            if cli.json {
+                print_json(&serde_json::to_value(&notes)?)?;
+            } else {
+                for m in &notes {
+                    println!("{}  {}  {}{}", m.id, m.modified_at, display_title(m), tag_suffix(m));
+                }
             }
         }
         Command::Sync { .. } | Command::SyncStatus => unreachable!("handled above"),
