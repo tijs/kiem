@@ -82,5 +82,6 @@ is always the `.kiem` marker, never this prose.
 ## Agent-agnostic by design
 
 The portable interface is the **CLI** (and, later, MCP): any agent or tool that
-can run `kiem` can read and maintain project state. The Claude skill in
-`skills/kiem-projects/` is one flavor over this contract, not a requirement of it.
+can run `kiem` can read and maintain project state. The agent integrations —
+including the Claude Code skill/plugin — live in the separate `kiem-agent` repo
+and are one flavor over this contract, not a requirement of it.
