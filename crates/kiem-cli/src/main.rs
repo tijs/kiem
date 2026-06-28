@@ -267,6 +267,9 @@ fn run() -> Result<()> {
         Command::Project { action } => match action {
             ProjectAction::Add { name } => {
                 let tag = project::to_tag(&name);
+                if tag.is_empty() {
+                    bail!("cannot derive a project name from {name:?}");
+                }
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let marker = project::write_marker(&cwd, &tag)?;
                 project::ensure_agents_pointer(&cwd, &tag)?;

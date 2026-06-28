@@ -22,7 +22,10 @@ pub fn resolve(start: &Path, explicit: Option<&str>) -> Result<String> {
         return Ok(to_tag(name));
     }
     if let Some(tag) = read_marker(start)? {
-        return Ok(tag);
+        // Canonicalize through `to_tag` so a hand-edited marker (e.g.
+        // `proj/My App`) resolves to the same tag `note add` will embed
+        // (`proj/my_app`), instead of desyncing writes from queries.
+        return Ok(to_tag(&tag));
     }
     let base = start
         .file_name()
@@ -32,6 +35,8 @@ pub fn resolve(start: &Path, explicit: Option<&str>) -> Result<String> {
 }
 
 /// Search `start` and its ancestors for a `.kiem` marker; return its project tag.
+/// The walk stops at the repository root (a directory containing `.git`) so a
+/// stray marker above the repo (e.g. `~/.kiem`) never captures an unrelated repo.
 pub fn read_marker(start: &Path) -> Result<Option<String>> {
     for dir in start.ancestors() {
         let path = dir.join(MARKER);
@@ -39,6 +44,9 @@ pub fn read_marker(start: &Path) -> Result<Option<String>> {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
             return Ok(Some(parse_marker(&text)?));
+        }
+        if dir.join(".git").exists() {
+            break; // repo root: don't escape into parent/home markers
         }
     }
     Ok(None)
@@ -74,26 +82,33 @@ pub fn ensure_agents_pointer(dir: &Path, tag: &str) -> Result<()> {
 }
 
 /// Parse `project = "proj/<slug>"` from marker text (quotes and spacing tolerant).
+/// Skips lines that merely start with `project` but are a different key
+/// (`projects`, `project_owner`, …) and only errors once no `project` key is found.
 fn parse_marker(text: &str) -> Result<String> {
     for line in text.lines() {
-        if let Some(rest) = line.trim().strip_prefix("project") {
-            let value = rest
-                .trim_start()
-                .strip_prefix('=')
-                .context("malformed .kiem: expected `project = \"proj/<slug>\"`")?;
-            let value = value.trim().trim_matches('"').trim();
-            if !value.is_empty() {
-                return Ok(value.to_string());
-            }
+        let Some(rest) = line.trim().strip_prefix("project") else { continue };
+        // The exact key `project`: the next non-space character must be `=`.
+        let Some(value) = rest.trim_start().strip_prefix('=') else { continue };
+        let value = value.trim().trim_matches('"').trim();
+        if !value.is_empty() {
+            return Ok(value.to_string());
         }
     }
     bail!("malformed .kiem: no `project` key")
 }
 
 /// Build a `proj/<slug>` tag from a free-form name or an already-prefixed value.
+/// Returns an empty string when the name has no slug-able characters, so callers
+/// can reject it (matching the app's empty-slug guard) rather than creating a
+/// degenerate `proj/` tag.
 pub fn to_tag(name: &str) -> String {
     let raw = name.strip_prefix(TAG_PREFIX).unwrap_or(name);
-    format!("{TAG_PREFIX}{}", slugify(raw))
+    let slug = slugify(raw);
+    if slug.is_empty() {
+        String::new()
+    } else {
+        format!("{TAG_PREFIX}{slug}")
+    }
 }
 
 /// Slugify into characters a Kiem tag accepts (`[a-z0-9_/]` — the tag regex has
@@ -160,6 +175,63 @@ mod tests {
         let sub = dir.path().join("a/b");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(read_marker(&sub).unwrap().as_deref(), Some("proj/x"));
+    }
+
+    #[test]
+    fn ancestor_walk_stops_at_repo_root() {
+        // A marker above the repo root must not capture the repo.
+        let outer = tempfile::tempdir().unwrap();
+        write_marker(outer.path(), "proj/outer").unwrap();
+        let repo = outer.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let sub = repo.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+        // No marker inside the repo → walk stops at .git, never sees proj/outer.
+        assert_eq!(read_marker(&sub).unwrap(), None);
+        // A marker at the repo root is still found.
+        write_marker(&repo, "proj/inner").unwrap();
+        assert_eq!(read_marker(&sub).unwrap().as_deref(), Some("proj/inner"));
+    }
+
+    #[test]
+    fn parse_marker_skips_non_key_lines_and_errors_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        // A `project`-prefixed decoy key above the real key must not abort parsing.
+        std::fs::write(dir.path().join(MARKER), "project_owner = \"me\"\nproject = \"proj/y\"\n").unwrap();
+        assert_eq!(read_marker(dir.path()).unwrap().as_deref(), Some("proj/y"));
+
+        std::fs::write(dir.path().join(MARKER), "name = \"x\"\n").unwrap();
+        assert!(read_marker(dir.path()).is_err(), "no project key → error");
+    }
+
+    #[test]
+    fn resolve_canonicalizes_a_hand_edited_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        // A human wrote a non-canonical tag (capitals + space).
+        std::fs::write(dir.path().join(MARKER), "project = \"proj/My App\"\n").unwrap();
+        // resolve canonicalizes it to what `note add` will actually embed.
+        assert_eq!(resolve(dir.path(), None).unwrap(), "proj/my_app");
+    }
+
+    #[test]
+    fn empty_name_yields_empty_tag() {
+        assert_eq!(to_tag("!!!"), "");
+        assert_eq!(to_tag("   "), "");
+    }
+
+    #[test]
+    fn slug_parity_fixture_matches_rust_impl() {
+        // Cross-language contract: every case here must also pass against the
+        // Swift `projectTag(for:)` mirror (see fixtures/project-slug.json).
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/project-slug.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for case in json["cases"].as_array().unwrap() {
+            let input = case["input"].as_str().unwrap();
+            let expected = case["tag"].as_str().unwrap();
+            assert_eq!(to_tag(input), expected, "slug mismatch for {input:?}");
+        }
     }
 
     #[test]

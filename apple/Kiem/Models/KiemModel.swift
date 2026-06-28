@@ -61,9 +61,13 @@ final class KiemModel {
         }
     }
 
+    /// The reserved namespace that makes a tag a project. Single source of truth
+    /// (mirrors `TAG_PREFIX` in crates/kiem-cli/src/project.rs).
+    static let projectTagPrefix = "proj/"
+
     /// Display name for a project tag: `proj/kiem_app` → `kiem_app`.
     static func projectName(_ tag: String) -> String {
-        tag.hasPrefix("proj/") ? String(tag.dropFirst("proj/".count)) : tag
+        tag.hasPrefix(projectTagPrefix) ? String(tag.dropFirst(projectTagPrefix.count)) : tag
     }
 
     var selectedNoteID: String? {
@@ -148,6 +152,11 @@ final class KiemModel {
     func toggleProjectTodo(noteID: String, index: UInt32, checked: Bool) {
         report { try store.setTodoChecked(noteId: noteID, index: index, checked: checked) }
         refresh()
+        // If the toggled note is open in the editor, re-sync its text. Otherwise
+        // the editor keeps the pre-toggle body and the next keystroke writes it
+        // back, silently reverting the checkbox. loadSelectedNote sets loadedBody
+        // before editorText, so the change it triggers sees them equal and skips.
+        if noteID == selectedNoteID { loadSelectedNote() }
     }
 
     /// Full-text search via the Rust core, mapped back to list metadata with
@@ -176,8 +185,8 @@ final class KiemModel {
     /// Refresh the sidebar's tag list, project list, and smart-filter counts.
     private func refreshSidebar() {
         let allTags = report { try store.getTags() } ?? []
-        projects = allTags.filter { $0.tag.hasPrefix("proj/") }
-        tags = allTags.filter { !$0.tag.hasPrefix("proj/") }
+        projects = allTags.filter { $0.tag.hasPrefix(Self.projectTagPrefix) }
+        tags = allTags.filter { !$0.tag.hasPrefix(Self.projectTagPrefix) }
         filterCounts = SmartFilter.allCases.reduce(into: [:]) { counts, filter in
             counts[filter] = report { try notes(for: .filter(filter)).count } ?? 0
         }
@@ -188,24 +197,38 @@ final class KiemModel {
     /// the CLI/agent's responsibility, not the app's.)
     func createProject(name: String) {
         let tag = Self.projectTag(for: name)
-        guard !tag.isEmpty else { return }
+        guard !tag.isEmpty else {
+            errorMessage = "Couldn’t make a project name from “\(name)”. Use letters or numbers."
+            return
+        }
         report { try store.createNote(body: "# \(name)\n\nProject home.\n\n#\(tag)", authorDid: Self.authorPlaceholder) }
         refresh()
         selection = .project(tag)
     }
 
-    /// `proj/<slug>` from a free-form name. Mirrors the Rust CLI slug rule in
-    /// `crates/kiem-cli/src/project.rs` (`slugify`): lowercase; space/`-`/`_` → `_`;
-    /// keep `[a-z0-9/]`; collapse repeats; trim `_`. The `_` separator matters —
-    /// the tag grammar rejects `-`, so a `-` slug would not round-trip.
+    /// `proj/<slug>` from a free-form name. Byte-for-byte mirror of the Rust CLI
+    /// `to_tag`/`slugify` in `crates/kiem-cli/src/project.rs`, enforced by the
+    /// shared `fixtures/project-slug.json` parity contract: strip a leading
+    /// `proj/`; lowercase ASCII A–Z only (non-ASCII is dropped, NOT Unicode-folded
+    /// — `String.lowercased()` would diverge); keep `[a-z0-9/]`; space/`-`/`_` → a
+    /// single `_`; collapse repeats; trim `_`. Empty slug → empty tag.
     static func projectTag(for name: String) -> String {
+        let raw = name.hasPrefix(projectTagPrefix) ? String(name.dropFirst(projectTagPrefix.count)) : name
         var slug = ""
         var prevSep = false
-        for ch in name.lowercased() {
-            if ch.isASCII && (ch.isLetter || ch.isNumber || ch == "/") {
-                slug.append(ch)
+        for ch in raw {
+            // Mirror Rust's `to_ascii_lowercase`: only A–Z fold; everything else
+            // is left as-is and then dropped if non-ASCII.
+            let c: Character
+            if let a = ch.asciiValue, (65...90).contains(a) {
+                c = Character(UnicodeScalar(a + 32))
+            } else {
+                c = ch
+            }
+            if let a = c.asciiValue, (97...122).contains(a) || (48...57).contains(a) || c == "/" {
+                slug.append(c)
                 prevSep = false
-            } else if ch == " " || ch == "-" || ch == "_" {
+            } else if c == " " || c == "-" || c == "_" {
                 if !prevSep && !slug.isEmpty {
                     slug.append("_")
                     prevSep = true
@@ -213,7 +236,7 @@ final class KiemModel {
             }
         }
         while slug.hasSuffix("_") { slug.removeLast() }
-        return slug.isEmpty ? "" : "proj/\(slug)"
+        return slug.isEmpty ? "" : projectTagPrefix + slug
     }
 
     var selectedNote: NoteMetadata? {

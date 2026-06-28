@@ -156,7 +156,11 @@ fn parse_checkbox_line(line: &str) -> Option<(usize, bool, String)> {
     let trimmed = line.trim_start_matches(is_horizontal_ws);
     let lead = line.len() - trimmed.len();
     let bytes = trimmed.as_bytes();
-    if bytes.len() < 5 || &trimmed[..3] != "- [" || bytes[4] != b']' {
+    // `starts_with` is char-boundary safe; a byte-range slice (`&trimmed[..3]`)
+    // panics when a multibyte char straddles byte 3 (e.g. a line starting with an
+    // emoji or accented letter). After the prefix matches, bytes 0..5 are ASCII
+    // (`- [x]`), so the byte indexing and `trimmed[5..]` below stay on boundaries.
+    if bytes.len() < 5 || !trimmed.starts_with("- [") || bytes[4] != b']' {
         return None;
     }
     let checked = match bytes[3] {
@@ -385,6 +389,19 @@ mod tests {
         // Toggling preserves CRLF line endings.
         let out = set_todo_checked(body, 1, true).unwrap();
         assert_eq!(out, "- [X] done\r\n- [x] todo\r\n");
+    }
+
+    #[test]
+    fn non_ascii_lines_do_not_panic_the_checkbox_parser() {
+        // A line starting with a multibyte char must not panic the byte-offset
+        // parser; checkbox items on other lines still parse.
+        let body = "😀 mood\nnaïve note\n- [ ] real task\n我的笔记";
+        let items = extract_todo_items(body);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "real task");
+        // A non-ASCII checkbox text is preserved.
+        let out = set_todo_checked("- [ ] café ☕", 0, true).unwrap();
+        assert_eq!(out, "- [x] café ☕");
     }
 
     #[test]

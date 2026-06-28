@@ -33,24 +33,37 @@ project = "proj/<slug>"
 ## Slugs
 
 `slugify(name)` (canonical implementation: `crates/kiem-cli/src/project.rs`):
-lowercase; space / `-` / `_` → `_`; keep `[a-z0-9/]`; drop everything else;
-collapse repeats; trim leading/trailing `_`. The separator is `_`, **not** `-`,
-because the tag grammar (`#([a-zA-Z][a-zA-Z0-9_/]*)`) rejects `-` — a `-` slug
-would not round-trip through tag derivation. Example: `"Kiem App"` → `proj/kiem_app`.
+lowercase **ASCII A–Z only** (non-ASCII characters are dropped, not Unicode
+case-folded); keep `[a-z0-9/]`; space / `-` / `_` → a single `_`; drop everything
+else; collapse repeats; trim leading/trailing `_`. An empty slug yields an empty
+tag (callers reject it rather than create a degenerate `proj/`). The separator is
+`_`, **not** `-`, because the tag grammar (`#([a-zA-Z][a-zA-Z0-9_/]*)`) rejects
+`-` — a `-` slug would not round-trip through tag derivation. Example:
+`"Kiem App"` → `proj/kiem_app`.
 
-The macOS app mirrors this rule in `KiemModel.projectTag(for:)`; the two must
-agree so app- and CLI-created projects share one tag.
+The macOS app mirrors this rule in `KiemModel.projectTag(for:)`. The two are kept
+in lockstep by the language-neutral `fixtures/project-slug.json` parity contract
+(the same pattern as content derivation): the Rust CLI test suite asserts against
+it today; the Swift side vendors and asserts against it once an app test target
+exists. The ASCII-only fold matters — `String.lowercased()` in Swift would keep
+characters (e.g. Turkish `İ`, Kelvin `K`) that Rust drops, splitting one project
+across two tags.
 
 ## Resolution precedence
 
 The CLI resolves the current project in this order:
 
 1. An explicit `--project <name-or-tag>` flag.
-2. The `.kiem` marker in the working directory **or any ancestor**.
+2. The `.kiem` marker in the working directory **or any ancestor up to the repo
+   root** (the ancestor walk stops at the first directory containing `.git`, so a
+   stray marker above the repo — e.g. `~/.kiem` — never captures an unrelated repo).
 3. Fallback: the slugified name of the working directory.
 
 The explicit marker (2) is preferred over directory-name inference (3); inference
 exists only so a repo with no marker still resolves to *something* predictable.
+A resolved marker value is canonicalized through the slug rule, so a hand-edited
+non-canonical tag (e.g. `proj/My App`) resolves to the same tag that `note add`
+embeds (`proj/my_app`) instead of desyncing writes from queries.
 
 ## AGENTS.md pointer
 
