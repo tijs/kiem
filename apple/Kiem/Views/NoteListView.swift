@@ -18,14 +18,21 @@ struct NoteListView: View {
                         NoteRow(note: note)
                             .tag(note.id)
                             .contextMenu {
-                                Button("Move to Trash", role: .destructive) {
-                                    model.deleteNote(id: note.id)
+                                if model.isViewingTrash {
+                                    Button("Restore") {
+                                        model.restoreNote(id: note.id)
+                                    }
+                                } else {
+                                    Button("Move to Trash", role: .destructive) {
+                                        model.deleteNote(id: note.id)
+                                    }
                                 }
                             }
                     }
                 }
             }
         }
+        .searchable(text: $model.searchText, prompt: "Search notes")
     }
 }
 

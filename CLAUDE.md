@@ -12,9 +12,15 @@ a sibling repo at `../pulp` (see the container `CLAUDE.md` one level up).
 
 This repo also holds all cross-cutting `docs/` for the whole project.
 
-**Current state:** early. Only `kiem-core` exists so far (the Tier-1 content-derivation
-module). `kiem-cli`, `kiem-ffi`, and the `apple/` SwiftUI app are later phases described
-in `docs/plans/`.
+**Current state:** all three crates exist (`kiem-core`, `kiem-cli`, `kiem-ffi`) plus a
+working `apple/` macOS SwiftUI app. The core owns Automerge note storage, SQLite
+denormalized metadata, tantivy search, and local-network P2P sync (mDNS over
+`_kiem._tcp`). The CLI does CRUD + a sync daemon. The macOS app does CRUD, tags, smart
+filters, full-text search, trash/restore, a formatting toolbar (over the Pulp editor),
+and background P2P sync. Roadmap (`docs/plans/`) tracks units U1–U17: U1–U8 and U12 are
+done; remaining are live-sync→editor refresh (U10), identity/DIDs (U11), sync-status UI
+(U13), full CLI flags (U14), MCP (U15), and the iOS Pulp port. Identity is still a
+`"local"` placeholder.
 
 ## Commands
 
@@ -29,13 +35,24 @@ cargo build
 cargo clippy --all-targets       # lint (keep clean)
 ```
 
-The user's global setup pipes Swift builds through `xcsift`; that does not apply to this
-Rust repo. Plain `cargo` is correct here.
+Plain `cargo` is correct for the Rust crates. For the macOS app (run from `apple/`):
+
+```bash
+apple/build-kiemkit.sh            # regenerate the embedded core (REQUIRED after any kiem-ffi/kiem-core change)
+cd apple && xcodegen generate     # regenerate Kiem.xcodeproj after editing project.yml
+xcodebuild -project Kiem.xcodeproj -scheme Kiem build | xcsift
+```
+
+A pre-build script phase fails the Xcode build if `crates/*/src/*.rs` is newer than the
+embedded `apple/KiemKit/` — so a stale core can no longer silently clobber metadata; you
+get a red build error pointing at `build-kiemkit.sh` instead.
 
 ## Architecture
 
-**Cargo workspace** (`Cargo.toml`) with member crates under `crates/`. Today that is
-just `kiem-core`; the plan adds `kiem-cli` (binary) and `kiem-ffi` (UniFFI cdylib).
+**Cargo workspace** (`Cargo.toml`) with member crates under `crates/`: `kiem-core`
+(library), `kiem-cli` (binary + sync daemon), and `kiem-ffi` (UniFFI cdylib bridged to
+Swift as the gitignored `apple/KiemKit/` package). The macOS app links KiemKit and the
+sibling Pulp editor package.
 
 **`kiem-core`** is a pure Rust library — zero FFI awareness, testable with `cargo test`
 alone. Its current scope is the `content` module (`crates/kiem-core/src/content.rs`):

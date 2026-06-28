@@ -27,12 +27,25 @@ final class KiemModel {
         didSet { refreshNotes() }
     }
 
+    /// Full-text search query. Non-empty overrides the sidebar selection and
+    /// drives the note list from the Rust core's search index.
+    var searchText: String = "" {
+        didSet { refreshNotes() }
+    }
+
+    /// Whether the trash filter is the active selection (gates restore vs. trash).
+    var isViewingTrash: Bool {
+        if case .filter(.trash) = selection { return true }
+        return false
+    }
+
     /// Empty-list heading for the current selection.
     var emptyNotesTitle: String {
+        if !searchText.isEmpty { return "No matches for “\(searchText)”" }
         switch selection {
-        case .allNotes: "No notes yet"
-        case let .tag(tag): "No notes tagged #\(tag)"
-        case let .filter(filter): filter.emptyTitle
+        case .allNotes: return "No notes yet"
+        case let .tag(tag): return "No notes tagged #\(tag)"
+        case let .filter(filter): return filter.emptyTitle
         }
     }
 
@@ -95,11 +108,21 @@ final class KiemModel {
     }
 
     func refreshNotes() {
-        let listed: [NoteMetadata]? = report { try notes(for: selection) }
+        let listed: [NoteMetadata]? = searchText.isEmpty
+            ? report { try notes(for: selection) }
+            : report { try searchResults(matching: searchText) }
         notes = listed ?? []
         if let selected = selectedNoteID, !notes.contains(where: { $0.id == selected }) {
             selectedNoteID = nil
         }
+    }
+
+    /// Full-text search via the Rust core, mapped back to list metadata with
+    /// rank order preserved. Trashed hits drop out — they're not in `listNotes`.
+    private func searchResults(matching query: String) throws -> [NoteMetadata] {
+        let hits = try store.search(query: query, limit: 50)
+        let byID = Dictionary(uniqueKeysWithValues: try store.listNotes().map { ($0.id, $0) })
+        return hits.compactMap { byID[$0.noteId] }
     }
 
     /// The note list backing a sidebar selection. Each case maps to a dedicated
@@ -141,6 +164,12 @@ final class KiemModel {
         if selectedNoteID == id {
             selectedNoteID = nil
         }
+        refresh()
+    }
+
+    /// Restore a trashed note (undo a "Move to Trash").
+    func restoreNote(id: String) {
+        report { try store.restoreNote(id: id) }
         refresh()
     }
 
