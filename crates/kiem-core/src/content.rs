@@ -87,7 +87,86 @@ pub fn has_unchecked_todos(body: &str) -> bool {
     body.contains("- [ ]")
 }
 
+/// A Markdown task-list item parsed from a note body. `index` is its 0-based
+/// position among all checkbox lines in the body — its stable address for
+/// [`set_todo_checked`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoItem {
+    pub index: usize,
+    pub text: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum TodoError {
+    #[error("todo index {index} out of range ({count} item(s) in note)")]
+    IndexOutOfRange { index: usize, count: usize },
+}
+
+/// Extract task-list items (`- [ ]` / `- [x]`) from the body, in document order.
+/// Matches the same loose dash-bullet convention as [`has_unchecked_todos`].
+pub fn extract_todo_items(body: &str) -> Vec<TodoItem> {
+    let mut items = Vec::new();
+    for line in body.split('\n') {
+        if let Some((_, checked, text)) = parse_checkbox_line(line) {
+            items.push(TodoItem { index: items.len(), text, checked });
+        }
+    }
+    items
+}
+
+/// Return a copy of `body` with the checkbox at `index` set to `checked`.
+/// Preserves all other text exactly (including line endings). Errors when
+/// `index` addresses no checkbox.
+pub fn set_todo_checked(body: &str, index: usize, checked: bool) -> Result<String, TodoError> {
+    let mut seen = 0usize;
+    let mut found = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in body.split('\n') {
+        match parse_checkbox_line(line) {
+            Some((pos, _, _)) if seen == index => {
+                let mut new_line = line.to_string();
+                new_line.replace_range(pos..pos + 1, if checked { "x" } else { " " });
+                out.push(new_line);
+                found = true;
+                seen += 1;
+            }
+            Some(_) => {
+                out.push(line.to_string());
+                seen += 1;
+            }
+            None => out.push(line.to_string()),
+        }
+    }
+    if found {
+        Ok(out.join("\n"))
+    } else {
+        Err(TodoError::IndexOutOfRange { index, count: seen })
+    }
+}
+
 // MARK: - Internals
+
+/// Parse one line as a task-list item. Returns the byte offset of the state
+/// character (the space or `x` inside the brackets) within `line`, whether it is
+/// checked, and the trimmed item text. Dash bullet only, mirroring
+/// [`has_unchecked_todos`]; a trailing `\r` (CRLF input) is tolerated.
+fn parse_checkbox_line(line: &str) -> Option<(usize, bool, String)> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let trimmed = line.trim_start_matches(is_horizontal_ws);
+    let lead = line.len() - trimmed.len();
+    let bytes = trimmed.as_bytes();
+    if bytes.len() < 5 || &trimmed[..3] != "- [" || bytes[4] != b']' {
+        return None;
+    }
+    let checked = match bytes[3] {
+        b' ' => false,
+        b'x' | b'X' => true,
+        _ => return None,
+    };
+    let text = trimmed[5..].trim_start_matches(is_horizontal_ws).to_string();
+    Some((lead + 3, checked, text))
+}
 
 /// Normalize line endings to LF so CRLF / lone-CR input derives identically on
 /// both sides of the FFI boundary.
@@ -267,5 +346,53 @@ mod tests {
     fn unchecked_todos() {
         assert!(has_unchecked_todos("- [ ] do it"));
         assert!(!has_unchecked_todos("- [x] done"));
+    }
+
+    #[test]
+    fn extract_items_reports_index_text_and_state() {
+        let body = "# T\n- [ ] first\n- [x] second\nprose\n  - [ ] indented #tag";
+        let items = extract_todo_items(body);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], TodoItem { index: 0, text: "first".into(), checked: false });
+        assert_eq!(items[1], TodoItem { index: 1, text: "second".into(), checked: true });
+        // Indented item keeps its index; inline text (incl. #tag) preserved.
+        assert_eq!(items[2], TodoItem { index: 2, text: "indented #tag".into(), checked: false });
+    }
+
+    #[test]
+    fn no_checkboxes_yields_empty_and_out_of_range() {
+        assert!(extract_todo_items("just prose\n# Heading").is_empty());
+        assert_eq!(
+            set_todo_checked("just prose", 0, true),
+            Err(TodoError::IndexOutOfRange { index: 0, count: 0 })
+        );
+    }
+
+    #[test]
+    fn set_checked_flips_only_the_addressed_item() {
+        let body = "- [ ] a\n- [ ] b\n- [ ] c";
+        let out = set_todo_checked(body, 1, true).unwrap();
+        assert_eq!(out, "- [ ] a\n- [x] b\n- [ ] c");
+        let items = extract_todo_items(&out);
+        assert_eq!((items[0].checked, items[1].checked, items[2].checked), (false, true, false));
+    }
+
+    #[test]
+    fn uppercase_x_parsed_and_crlf_preserved() {
+        let body = "- [X] done\r\n- [ ] todo\r\n";
+        let items = extract_todo_items(body);
+        assert_eq!((items[0].checked, items[1].checked), (true, false));
+        // Toggling preserves CRLF line endings.
+        let out = set_todo_checked(body, 1, true).unwrap();
+        assert_eq!(out, "- [X] done\r\n- [x] todo\r\n");
+    }
+
+    #[test]
+    fn set_checked_index_beyond_count_errors_unchanged() {
+        let body = "- [ ] only";
+        assert_eq!(
+            set_todo_checked(body, 3, true),
+            Err(TodoError::IndexOutOfRange { index: 3, count: 1 })
+        );
     }
 }
