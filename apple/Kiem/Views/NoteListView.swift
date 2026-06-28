@@ -6,7 +6,7 @@ struct NoteListView: View {
 
     var body: some View {
         Group {
-            if model.notes.isEmpty {
+            if model.notes.isEmpty && model.projectTodos.isEmpty {
                 ContentUnavailableView(
                     model.emptyNotesTitle,
                     systemImage: "note.text",
@@ -14,6 +14,17 @@ struct NoteListView: View {
                 )
             } else {
                 List(selection: $model.selectedNoteID) {
+                    if model.isViewingProject && !model.projectTodos.isEmpty {
+                        Section("Open todos") {
+                            ForEach(model.projectTodos, id: \.self) { todo in
+                                ProjectTodoRow(todo: todo) {
+                                    model.toggleProjectTodo(
+                                        noteID: todo.noteId, index: todo.index, checked: true
+                                    )
+                                }
+                            }
+                        }
+                    }
                     ForEach(model.notes, id: \.id) { note in
                         NoteRow(note: note)
                             .tag(note.id)
@@ -33,6 +44,21 @@ struct NoteListView: View {
             }
         }
         .searchable(text: $model.searchText, prompt: "Search notes")
+    }
+}
+
+/// An open project todo, rendered as a tappable row that completes it.
+private struct ProjectTodoRow: View {
+    let todo: ProjectTodo
+    let onComplete: () -> Void
+
+    var body: some View {
+        Button(action: onComplete) {
+            Label(todo.text.isEmpty ? "(empty todo)" : todo.text, systemImage: "circle")
+                .lineLimit(1)
+        }
+        .buttonStyle(.plain)
+        .help("Mark done")
     }
 }
 

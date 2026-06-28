@@ -14,7 +14,12 @@ final class KiemModel {
     private let store: KiemStore
 
     private(set) var notes: [NoteMetadata] = []
+    /// Tags excluding the `proj/*` namespace (those surface under Projects).
     private(set) var tags: [TagCount] = []
+    /// Projects, derived from `proj/*` tags with their note counts.
+    private(set) var projects: [TagCount] = []
+    /// Open todos for the selected project (empty unless viewing one).
+    private(set) var projectTodos: [ProjectTodo] = []
     /// Live match counts per smart filter, shown beside its sidebar row.
     private(set) var filterCounts: [SmartFilter: Int] = [:]
     /// Peers currently linked for sync (drives the sync-status UI in U13).
@@ -39,14 +44,26 @@ final class KiemModel {
         return false
     }
 
+    /// Whether a project is the active selection (gates the project todo panel).
+    var isViewingProject: Bool {
+        if case .project = selection { return true }
+        return false
+    }
+
     /// Empty-list heading for the current selection.
     var emptyNotesTitle: String {
         if !searchText.isEmpty { return "No matches for “\(searchText)”" }
         switch selection {
         case .allNotes: return "No notes yet"
         case let .tag(tag): return "No notes tagged #\(tag)"
+        case let .project(tag): return "No notes in \(Self.projectName(tag))"
         case let .filter(filter): return filter.emptyTitle
         }
+    }
+
+    /// Display name for a project tag: `proj/kiem_app` → `kiem_app`.
+    static func projectName(_ tag: String) -> String {
+        tag.hasPrefix("proj/") ? String(tag.dropFirst("proj/".count)) : tag
     }
 
     var selectedNoteID: String? {
@@ -115,6 +132,22 @@ final class KiemModel {
         if let selected = selectedNoteID, !notes.contains(where: { $0.id == selected }) {
             selectedNoteID = nil
         }
+        refreshProjectTodos()
+    }
+
+    /// Load (or clear) the selected project's open todos.
+    private func refreshProjectTodos() {
+        guard case let .project(tag) = selection, searchText.isEmpty else {
+            projectTodos = []
+            return
+        }
+        projectTodos = report { try store.listTodoItemsForTag(tag: tag) } ?? []
+    }
+
+    /// Toggle a project todo by its (note, index) address and refresh.
+    func toggleProjectTodo(noteID: String, index: UInt32, checked: Bool) {
+        report { try store.setTodoChecked(noteId: noteID, index: index, checked: checked) }
+        refresh()
     }
 
     /// Full-text search via the Rust core, mapped back to list metadata with
@@ -131,6 +164,7 @@ final class KiemModel {
         switch selection {
         case .allNotes: try store.listNotes()
         case let .tag(tag): try store.listByTag(tag: tag)
+        case let .project(tag): try store.listByTag(tag: tag)
         case .filter(.todo): try store.listTodos()
         case .filter(.today): try store.listToday()
         case .filter(.untagged): try store.listUntagged()
@@ -139,12 +173,47 @@ final class KiemModel {
         }
     }
 
-    /// Refresh the sidebar's tag list and smart-filter counts.
+    /// Refresh the sidebar's tag list, project list, and smart-filter counts.
     private func refreshSidebar() {
-        tags = report { try store.getTags() } ?? []
+        let allTags = report { try store.getTags() } ?? []
+        projects = allTags.filter { $0.tag.hasPrefix("proj/") }
+        tags = allTags.filter { !$0.tag.hasPrefix("proj/") }
         filterCounts = SmartFilter.allCases.reduce(into: [:]) { counts, filter in
             counts[filter] = report { try notes(for: .filter(filter)).count } ?? 0
         }
+    }
+
+    /// Create a new project: a home note carrying the `proj/<slug>` tag so the
+    /// project appears in the synced store. (The committed `.kiem` repo marker is
+    /// the CLI/agent's responsibility, not the app's.)
+    func createProject(name: String) {
+        let tag = Self.projectTag(for: name)
+        guard !tag.isEmpty else { return }
+        report { try store.createNote(body: "# \(name)\n\nProject home.\n\n#\(tag)", authorDid: Self.authorPlaceholder) }
+        refresh()
+        selection = .project(tag)
+    }
+
+    /// `proj/<slug>` from a free-form name. Mirrors the Rust CLI slug rule in
+    /// `crates/kiem-cli/src/project.rs` (`slugify`): lowercase; space/`-`/`_` → `_`;
+    /// keep `[a-z0-9/]`; collapse repeats; trim `_`. The `_` separator matters —
+    /// the tag grammar rejects `-`, so a `-` slug would not round-trip.
+    static func projectTag(for name: String) -> String {
+        var slug = ""
+        var prevSep = false
+        for ch in name.lowercased() {
+            if ch.isASCII && (ch.isLetter || ch.isNumber || ch == "/") {
+                slug.append(ch)
+                prevSep = false
+            } else if ch == " " || ch == "-" || ch == "_" {
+                if !prevSep && !slug.isEmpty {
+                    slug.append("_")
+                    prevSep = true
+                }
+            }
+        }
+        while slug.hasSuffix("_") { slug.removeLast() }
+        return slug.isEmpty ? "" : "proj/\(slug)"
     }
 
     var selectedNote: NoteMetadata? {

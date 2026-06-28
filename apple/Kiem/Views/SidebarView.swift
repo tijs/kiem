@@ -29,6 +29,19 @@ struct SidebarView: View {
                 }
             }
 
+            if !model.projects.isEmpty {
+                Section("Projects") {
+                    ForEach(model.projects, id: \.tag) { entry in
+                        SidebarRow(
+                            title: KiemModel.projectName(entry.tag),
+                            systemImage: "folder",
+                            count: Int(entry.count)
+                        )
+                        .tag(SidebarSelection.project(entry.tag))
+                    }
+                }
+            }
+
             if !model.tags.isEmpty {
                 Section("Tags") {
                     ForEach(model.tags, id: \.tag) { entry in
