@@ -375,6 +375,17 @@ impl NoteStore {
         self.update_note(id, &new_body)
     }
 
+    /// Append a new unchecked todo to note `id` and persist. Goes through the
+    /// normal body-update path (title/tags/`modified_at` re-derive, splices into
+    /// the existing Automerge document), so it is sync-safe like an edit.
+    pub fn add_todo(&mut self, id: &str, text: &str) -> Result<NoteMetadata, StoreError> {
+        let note = self
+            .get_note(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let new_body = content::append_todo(note.body.as_str(), text);
+        self.update_note(id, &new_body)
+    }
+
     // -- internals --
 
     /// Hydrate → mutate → reconcile into the *same* document, then persist.

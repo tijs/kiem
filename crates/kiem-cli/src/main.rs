@@ -129,6 +129,8 @@ enum ProjectAction {
 
 #[derive(Subcommand)]
 enum TodoAction {
+    /// Append a todo to a note: kiem todo add <note-id> "<text>"
+    Add { note_id: String, text: String },
     /// Mark a todo done: kiem todo check <note-id> <index>
     Check { note_id: String, index: usize },
     /// Mark a todo not done: kiem todo uncheck <note-id> <index>
@@ -340,8 +342,20 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Command::Todo { action: TodoAction::Add { note_id, text } } => {
+            if text.trim().is_empty() {
+                bail!("todo text is empty");
+            }
+            let meta = store.add_todo(&note_id, &text).map_err(not_found_context(&note_id))?;
+            if cli.json {
+                print_json(&serde_json::to_value(&meta)?)?;
+            } else {
+                println!("Added todo to {} ({})", display_title(&meta), meta.id);
+            }
+        }
         Command::Todo { action } => {
             let (note_id, index, checked) = match action {
+                TodoAction::Add { .. } => unreachable!("handled above"),
                 TodoAction::Check { note_id, index } => (note_id, index, true),
                 TodoAction::Uncheck { note_id, index } => (note_id, index, false),
             };
@@ -359,7 +373,13 @@ fn run() -> Result<()> {
             NoteAction::Add { text, project: project_override } => {
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let tag = project::resolve(&cwd, project_override.as_deref())?;
-                let body = format!("{text}\n\n#{tag}");
+                // Only auto-append the project tag if the text doesn't already
+                // carry it — otherwise a hand-tagged note ends up with it twice.
+                let body = if kiem_core::content::extract_tags(&text).contains(&tag) {
+                    text
+                } else {
+                    format!("{text}\n\n#{tag}")
+                };
                 let meta = store.create_note(&body, AUTHOR_PLACEHOLDER)?;
                 if cli.json {
                     print_json(&serde_json::to_value(&meta)?)?;

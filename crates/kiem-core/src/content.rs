@@ -145,6 +145,26 @@ pub fn set_todo_checked(body: &str, index: usize, checked: bool) -> Result<Strin
     }
 }
 
+/// Return a copy of `body` with a new unchecked task-list item appended,
+/// placed immediately after the last existing checkbox line so todos stay
+/// grouped (or at the end of the body when there are none). A leading checkbox
+/// marker on `text` (e.g. `- [ ] foo`) is tolerated and stripped, so callers
+/// can pass either raw text or a full item line.
+pub fn append_todo(body: &str, text: &str) -> String {
+    let text = match parse_checkbox_line(text) {
+        Some((_, _, inner)) => inner,
+        None => trim_horizontal_ws(text).to_string(),
+    };
+    let item = format!("- [ ] {text}");
+    let mut lines: Vec<String> = body.split('\n').map(str::to_string).collect();
+    match lines.iter().rposition(|l| parse_checkbox_line(l).is_some()) {
+        Some(i) => lines.insert(i + 1, item),
+        None if body.is_empty() => return item,
+        None => return format!("{}\n{item}", body.trim_end_matches('\n')),
+    }
+    lines.join("\n")
+}
+
 // MARK: - Internals
 
 /// Parse one line as a task-list item. Returns the byte offset of the state
@@ -411,5 +431,27 @@ mod tests {
             set_todo_checked(body, 3, true),
             Err(TodoError::IndexOutOfRange { index: 3, count: 1 })
         );
+    }
+
+    #[test]
+    fn append_todo_inserts_after_last_checkbox_keeping_trailing_tags() {
+        // New item lands after the last checkbox (end of the list), not after a
+        // trailing tag block — so it renders as a real todo, grouped with the rest.
+        let body = "## Roadmap\n- [ ] one\n- [ ] two\n\n#proj/kiem_app";
+        let out = append_todo(body, "three");
+        assert_eq!(out, "## Roadmap\n- [ ] one\n- [ ] two\n- [ ] three\n\n#proj/kiem_app");
+        // A new checkbox is addressable as the next index.
+        let items = extract_todo_items(&out);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[2], TodoItem { index: 2, text: "three".into(), checked: false });
+    }
+
+    #[test]
+    fn append_todo_strips_a_redundant_checkbox_marker_and_handles_no_list() {
+        // Caller passed a full item line — must not become "- [ ] - [ ] x".
+        assert_eq!(append_todo("- [ ] a", "- [ ] b"), "- [ ] a\n- [ ] b");
+        // No existing checkbox: append at end of prose, exactly one new line.
+        assert_eq!(append_todo("just notes", "first"), "just notes\n- [ ] first");
+        assert_eq!(append_todo("", "first"), "- [ ] first");
     }
 }

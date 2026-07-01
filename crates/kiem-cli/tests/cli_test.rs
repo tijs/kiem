@@ -252,6 +252,45 @@ fn agent_loop_add_note_list_todos_then_check() {
 }
 
 #[test]
+fn note_add_does_not_duplicate_an_already_present_project_tag() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path()).args(["project", "add", "Demo"]).assert().success();
+
+    // Text already carries the project tag — it must not be appended again.
+    let note = json_out(
+        kiem_in(data.path(), repo.path())
+            .args(["note", "add", "# Hand tagged\n\n#proj/demo", "--json"]),
+    );
+    let id = note["id"].as_str().unwrap().to_owned();
+    let shown = json_out(kiem(data.path()).args(["show", &id, "--json"]));
+    let body = shown["body"].as_str().unwrap();
+    assert_eq!(body.matches("#proj/demo").count(), 1, "body: {body:?}");
+    assert_eq!(shown["tags"].as_array().unwrap(), &[serde_json::json!("proj/demo")]);
+}
+
+#[test]
+fn todo_add_appends_one_item_in_a_single_command() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path()).args(["project", "add", "Demo"]).assert().success();
+    let note = json_out(
+        kiem_in(data.path(), repo.path()).args(["note", "add", "# Tasks\n- [ ] first", "--json"]),
+    );
+    let id = note["id"].as_str().unwrap().to_owned();
+
+    // One command, no whole-body rewrite — the new item is addressable as index 1.
+    kiem(data.path()).args(["todo", "add", &id, "second"]).assert().success();
+    let todos = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
+    let items = todos.as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1]["text"], "second");
+
+    // Empty text is rejected rather than writing a blank checkbox.
+    kiem(data.path()).args(["todo", "add", &id, "   "]).assert().failure();
+}
+
+#[test]
 fn todo_check_bad_index_fails() {
     let data = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
