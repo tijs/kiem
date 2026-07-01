@@ -1,5 +1,19 @@
 [
   {
+    "name": "todo_substring_in_prose_is_not_a_todo",
+    "input": "Use the `- [ ]` syntax to add tasks",
+    "title": "Use the `- [ ]` syntax to add tasks",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "todo_after_leading_whitespace_counts",
+    "input": "Plan\n  - [ ] indented task",
+    "title": "Plan",
+    "tags": [],
+    "hasUncheckedTodos": true
+  },
+  {
     "name": "h1_heading",
     "input": "# My Title\nSome body text",
     "title": "My Title",

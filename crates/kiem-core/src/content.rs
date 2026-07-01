@@ -97,7 +97,11 @@ pub fn extract_tags(body: &str) -> Vec<String> {
 
 /// Whether the body contains at least one unchecked task item (`- [ ]`).
 pub fn has_unchecked_todos(body: &str) -> bool {
-    body.contains("- [ ]")
+    // Anchored to the same rule as `extract_todo_items` — a checkbox at line
+    // start (after optional leading whitespace), NOT a bare `- [ ]` substring.
+    // Otherwise a note that merely mentions `- [ ]` in prose or inline code
+    // would falsely light up the Todo filter.
+    body.split('\n').any(|line| matches!(parse_checkbox_line(line), Some((_, false, _))))
 }
 
 /// A Markdown task-list item parsed from a note body. `index` is its 0-based
