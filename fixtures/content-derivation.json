@@ -28,6 +28,27 @@
     "hasUncheckedTodos": false
   },
   {
+    "name": "title_strips_h2_heading",
+    "input": "## Roadmap\n\nRemaining units to ship.",
+    "title": "Roadmap",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "title_strips_deep_atx_heading",
+    "input": "###### Deep\nbody",
+    "title": "Deep",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
+    "name": "title_keeps_seven_hashes_not_a_heading",
+    "input": "####### TooDeep",
+    "title": "####### TooDeep",
+    "tags": [],
+    "hasUncheckedTodos": false
+  },
+  {
     "name": "tags_basic",
     "input": "Hello #project and #ideas here",
     "title": "Hello #project and #ideas here",
@@ -126,9 +147,9 @@
     "hasUncheckedTodos": false
   },
   {
-    "name": "multi_hash_not_stripped",
+    "name": "multi_hash_stripped",
     "input": "## Subheading only",
-    "title": "## Subheading only",
+    "title": "Subheading only",
     "tags": [],
     "hasUncheckedTodos": false
   },

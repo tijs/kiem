@@ -15,12 +15,12 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 /// Derive a note title from its body: the first non-empty line that is not a
-/// table row or table-separator-like line, with a leading `# ` (H1 marker)
+/// table row or table-separator-like line, with a leading ATX heading marker
 /// stripped. Returns an empty string when the body has no usable line.
 ///
-/// Only the H1 marker `# ` is stripped — `## ` and deeper ATX headings are kept
-/// verbatim, matching Swift `ContentAnalyzer`. This is intentional, not a partial
-/// heading parser.
+/// Any ATX heading level is unwrapped — `# `, `## `, … up to `###### ` — matching
+/// the render grammar `^(#{1,6})\s+`, so `## Roadmap` derives the title `Roadmap`
+/// (not `## Roadmap`). Swift `ContentAnalyzer` mirrors this exactly.
 pub fn derive_title(body: &str) -> String {
     let normalized = normalize_newlines(body);
     for raw_line in normalized.split('\n') {
@@ -34,10 +34,23 @@ pub fn derive_title(body: &str) -> String {
         if line.chars().all(|c| matches!(c, '-' | '|' | ':' | ' ')) {
             continue; // table separator / divider-only line
         }
-        let title = line.strip_prefix("# ").unwrap_or(line);
-        return trim_horizontal_ws(title).to_string();
+        return trim_horizontal_ws(strip_atx_marker(line)).to_string();
     }
     String::new()
+}
+
+/// Strip a leading ATX heading marker: 1–6 `#` followed by a space. Returns the
+/// line unchanged when it is not a heading (no `#`, 7+ `#`, or no following
+/// space — so a `#tag` line keeps its `#`). The `#` run is ASCII, so byte
+/// indexing stays on char boundaries.
+fn strip_atx_marker(line: &str) -> &str {
+    let hashes = line.len() - line.trim_start_matches('#').len();
+    if (1..=6).contains(&hashes) {
+        if let Some(rest) = line[hashes..].strip_prefix(' ') {
+            return rest;
+        }
+    }
+    line
 }
 
 /// Extract unique `#hashtags` from the body, in first-seen order. Tags inside
@@ -387,8 +400,12 @@ mod tests {
     }
 
     #[test]
-    fn deeper_heading_not_stripped() {
-        assert_eq!(derive_title("## Sub"), "## Sub");
+    fn any_atx_heading_level_stripped() {
+        assert_eq!(derive_title("## Sub"), "Sub");
+        assert_eq!(derive_title("###### Deep"), "Deep");
+        // 7+ hashes or no space is not a heading — kept verbatim.
+        assert_eq!(derive_title("####### TooDeep"), "####### TooDeep");
+        assert_eq!(derive_title("#notaheading"), "#notaheading");
     }
 
     #[test]

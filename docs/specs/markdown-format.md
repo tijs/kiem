@@ -131,16 +131,14 @@ The title is **derived from the body**, never edited directly.
    - empty,
    - a table row (starts with `|`), or
    - a divider-only line (every character is one of `-`, `|`, `:`, space).
-2. On the first surviving line: if it begins with `# ` (H1 marker — `#` followed by
-   a space), strip that marker.
+2. On the first surviving line: if it begins with an ATX heading marker — 1–6 `#`
+   followed by a space (matching the render grammar `^(#{1,6})\s+`) — strip that
+   marker. `# Foo`, `## Foo`, … `###### Foo` all derive `Foo`.
 3. Trim horizontal whitespace from the result and return it.
 4. If no line survives, the title is the empty string.
 
-**Intentional quirk:** only the H1 marker `# ` is stripped. `## Subheading` and
-deeper ATX headings are returned verbatim, markers included. The rendering grammar
-recognizes H1–H6 as headings *visually*, but title derivation only unwraps H1. This
-is a deliberate narrowing, not a parser gap — if a note's first line is `## Foo`,
-its title is `## Foo`.
+**Boundaries:** a line with 7+ leading `#`, or with `#`s not followed by a space
+(e.g. a `#tag` line), is not a heading — it is returned verbatim, markers included.
 
 ### Tags (NORMATIVE)
 
