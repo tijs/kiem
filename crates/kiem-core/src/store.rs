@@ -141,6 +141,36 @@ impl NoteStore {
         self.insert_note(&note)
     }
 
+    /// Create a note with an explicit `note_type` (e.g. `plan`, `review`,
+    /// `solution`) so project docs can be grouped by kind. An empty type falls
+    /// back to the default; the type is otherwise a free-form label.
+    pub fn create_note_with_type(
+        &mut self,
+        body: &str,
+        author_did: &str,
+        note_type: &str,
+    ) -> Result<NoteMetadata, StoreError> {
+        let mut note = NoteDoc::new(body, author_did);
+        if !note_type.trim().is_empty() {
+            note.metadata.note_type = note_type.trim().to_owned();
+        }
+        self.insert_note(&note)
+    }
+
+    /// Notes carrying `tag`, filtered to a single `note_type` (most recent
+    /// first). Backs `kiem notes --type` and the app's per-project grouping.
+    pub fn list_by_tag_and_type(
+        &self,
+        tag: &str,
+        note_type: &str,
+    ) -> Result<Vec<NoteMetadata>, StoreError> {
+        Ok(self
+            .list_by_tag(tag)?
+            .into_iter()
+            .filter(|m| m.note_type == note_type)
+            .collect())
+    }
+
     /// Insert a pre-built note (deterministic seam; sync will also use it).
     pub fn insert_note(&mut self, note: &NoteDoc) -> Result<NoteMetadata, StoreError> {
         let mut doc = AutoCommit::new();

@@ -112,6 +112,9 @@ enum Command {
         /// Override the resolved project (a name or proj/<slug>)
         #[arg(long)]
         project: Option<String>,
+        /// Only notes of this kind (e.g. plan, brainstorm, review, solution)
+        #[arg(long = "type")]
+        note_type: Option<String>,
     },
     /// Run the sync daemon (foreground): discover peers, keep notes converged
     Sync {
@@ -163,6 +166,10 @@ enum NoteAction {
         /// Override the resolved project (a name or proj/<slug>)
         #[arg(long)]
         project: Option<String>,
+        /// Kind of note (e.g. plan, brainstorm, review, solution, decision, doc).
+        /// Defaults to a plain note.
+        #[arg(long = "type")]
+        note_type: Option<String>,
     },
 }
 
@@ -407,7 +414,7 @@ fn run() -> Result<()> {
             }
         }
         Command::Note { action } => match action {
-            NoteAction::Add { text, project: project_override } => {
+            NoteAction::Add { text, project: project_override, note_type } => {
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let tag = project::resolve(&cwd, project_override.as_deref())?;
                 // Only auto-append the project tag if the text doesn't already
@@ -417,7 +424,11 @@ fn run() -> Result<()> {
                 } else {
                     format!("{text}\n\n#{tag}")
                 };
-                let meta = store.create_note(&body, AUTHOR_PLACEHOLDER)?;
+                let meta = store.create_note_with_type(
+                    &body,
+                    AUTHOR_PLACEHOLDER,
+                    note_type.as_deref().unwrap_or_default(),
+                )?;
                 if cli.json {
                     print_json(&serde_json::to_value(&meta)?)?;
                 } else {
@@ -425,10 +436,13 @@ fn run() -> Result<()> {
                 }
             }
         },
-        Command::Notes { project: project_override } => {
+        Command::Notes { project: project_override, note_type } => {
             let cwd = std::env::current_dir().context("reading current directory")?;
             let tag = project::resolve(&cwd, project_override.as_deref())?;
-            let notes = store.list_by_tag(&tag)?;
+            let notes = match &note_type {
+                Some(t) => store.list_by_tag_and_type(&tag, t)?,
+                None => store.list_by_tag(&tag)?,
+            };
             if cli.json {
                 print_json(&serde_json::to_value(&notes)?)?;
             } else {

@@ -354,3 +354,25 @@ fn edit_lines_targets_a_line_and_guards_stale_version() {
     store.edit_lines("e", Some(&fresh), 2, 2, "- [x] a ☕").unwrap();
     assert_eq!(store.list_todo_items_for_tag("proj/x").unwrap().len(), 1);
 }
+
+#[test]
+fn note_types_are_settable_and_filterable() {
+    let mut store = NoteStore::open_in_memory().unwrap();
+    let plan = store
+        .create_note_with_type("# Plan A\n\n#proj/x", DID, "plan")
+        .unwrap();
+    store.create_note_with_type("# Decision\n\n#proj/x", DID, "decision").unwrap();
+    store.create_note("# Plain\n\n#proj/x", DID).unwrap(); // defaults to "note"
+
+    assert_eq!(plan.note_type, "plan");
+    let plans = store.list_by_tag_and_type("proj/x", "plan").unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].title, "Plan A");
+    // Default type still lists under "note".
+    assert_eq!(store.list_by_tag_and_type("proj/x", "note").unwrap().len(), 1);
+    // All three are still in the untyped project view.
+    assert_eq!(store.list_by_tag("proj/x").unwrap().len(), 3);
+    // An empty type falls back to the default.
+    let m = store.create_note_with_type("# E\n\n#proj/x", DID, "  ").unwrap();
+    assert_eq!(m.note_type, "note");
+}
