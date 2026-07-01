@@ -291,6 +291,36 @@ fn todo_add_appends_one_item_in_a_single_command() {
 }
 
 #[test]
+fn edit_lines_targets_a_line_and_honors_expect_version() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path()).args(["project", "add", "Demo"]).assert().success();
+    let note = json_out(
+        kiem_in(data.path(), repo.path())
+            .args(["note", "add", "# T\n- [ ] a ☕\n- [ ] b", "--json"]),
+    );
+    let id = note["id"].as_str().unwrap().to_owned();
+    let shown = json_out(kiem(data.path()).args(["show", &id, "--json"]));
+    let version = shown["version"].as_str().unwrap().to_owned();
+
+    // Replace line 2 with the correct version; the multibyte line stays intact.
+    kiem(data.path())
+        .args(["edit-lines", &id, "2", "2", "--text", "- [x] a ☕", "--expect", &version])
+        .assert()
+        .success();
+    // `note add` auto-appended `#proj/demo`; only line 2 changed.
+    let after = json_out(kiem(data.path()).args(["show", &id, "--json"]));
+    assert_eq!(after["body"], "# T\n- [x] a ☕\n- [ ] b\n\n#proj/demo");
+
+    // The stale version is now rejected.
+    kiem(data.path())
+        .args(["edit-lines", &id, "3", "3", "--text", "- [x] b", "--expect", &version])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("changed since you read it"));
+}
+
+#[test]
 fn todo_check_bad_index_fails() {
     let data = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();

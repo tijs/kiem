@@ -165,6 +165,75 @@ pub fn append_todo(body: &str, text: &str) -> String {
     lines.join("\n")
 }
 
+/// A text edit expressed in **Unicode scalar** units (`char` counts), the unit
+/// Automerge's text sequence indexes by. Deliberately *not* bytes: feeding byte
+/// offsets to Automerge corrupts any text past a multi-byte character (the
+/// autosurgeon `Text::update` bug this replaces).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BodySplice {
+    /// Start position, counted in `char`s from the beginning of the body.
+    pub pos: usize,
+    /// Number of `char`s to delete at `pos`.
+    pub del: usize,
+    /// Replacement text inserted at `pos`.
+    pub insert: String,
+}
+
+/// The single minimal splice turning `old` into `new`, trimming the common
+/// leading and trailing scalars so unchanged text (and its CRDT history) is
+/// preserved. Returns `None` when the bodies are identical.
+pub fn body_splice(old: &str, new: &str) -> Option<BodySplice> {
+    if old == new {
+        return None;
+    }
+    let o: Vec<char> = old.chars().collect();
+    let n: Vec<char> = new.chars().collect();
+    let max_pre = o.len().min(n.len());
+    let mut pre = 0;
+    while pre < max_pre && o[pre] == n[pre] {
+        pre += 1;
+    }
+    let max_suf = max_pre - pre;
+    let mut suf = 0;
+    while suf < max_suf && o[o.len() - 1 - suf] == n[n.len() - 1 - suf] {
+        suf += 1;
+    }
+    Some(BodySplice {
+        pos: pre,
+        del: o.len() - pre - suf,
+        insert: n[pre..n.len() - suf].iter().collect(),
+    })
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum LineError {
+    #[error("line range {start}..={end} is out of range (note has {count} line(s))")]
+    OutOfRange { start: usize, end: usize, count: usize },
+    #[error("line range {start}..={end} is inverted")]
+    Inverted { start: usize, end: usize },
+}
+
+/// Replace the 1-based inclusive line range `start..=end` of `body` with
+/// `replacement` (which may be empty to delete the lines, or span several
+/// lines). Line splitting is on `\n`; a trailing newline is preserved.
+pub fn replace_lines(body: &str, start: usize, end: usize, replacement: &str) -> Result<String, LineError> {
+    if start == 0 || end == 0 || start > end {
+        return Err(LineError::Inverted { start, end });
+    }
+    let lines: Vec<&str> = body.split('\n').collect();
+    if end > lines.len() {
+        return Err(LineError::OutOfRange { start, end, count: lines.len() });
+    }
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    out.extend_from_slice(&lines[..start - 1]);
+    // Empty replacement deletes the range; otherwise it splices its own lines in.
+    if !replacement.is_empty() {
+        out.extend(replacement.split('\n'));
+    }
+    out.extend_from_slice(&lines[end..]);
+    Ok(out.join("\n"))
+}
+
 // MARK: - Internals
 
 /// Parse one line as a task-list item. Returns the byte offset of the state
@@ -422,6 +491,33 @@ mod tests {
         // A non-ASCII checkbox text is preserved.
         let out = set_todo_checked("- [ ] café ☕", 0, true).unwrap();
         assert_eq!(out, "- [x] café ☕");
+    }
+
+    #[test]
+    fn body_splice_positions_are_scalar_counts_not_bytes() {
+        // The whole point: positions must count chars, so a multi-byte prefix
+        // does not shift them (the autosurgeon byte-offset bug).
+        let s = body_splice("café ☕ alpha\nbeta", "café ☕ ALPHA\nbeta").unwrap();
+        assert_eq!(s.pos, 7, "7 scalars: 'café ☕ ' — not 9 bytes");
+        assert_eq!(s.del, 5); // "alpha"
+        assert_eq!(s.insert, "ALPHA");
+        assert_eq!(body_splice("same", "same"), None);
+        // Applying the splice by CHAR index reproduces `new`.
+        let mut chars: Vec<char> = "café ☕ alpha\nbeta".chars().collect();
+        chars.splice(s.pos..s.pos + s.del, s.insert.chars());
+        assert_eq!(chars.into_iter().collect::<String>(), "café ☕ ALPHA\nbeta");
+    }
+
+    #[test]
+    fn replace_lines_replaces_deletes_and_validates() {
+        let body = "# T\n- [ ] a\n- [ ] b\n- [ ] c";
+        assert_eq!(replace_lines(body, 3, 3, "- [x] b").unwrap(), "# T\n- [ ] a\n- [x] b\n- [ ] c");
+        // Multi-line replacement.
+        assert_eq!(replace_lines(body, 2, 2, "- [ ] a1\n- [ ] a2").unwrap(), "# T\n- [ ] a1\n- [ ] a2\n- [ ] b\n- [ ] c");
+        // Empty replacement deletes the range.
+        assert_eq!(replace_lines(body, 2, 3, "").unwrap(), "# T\n- [ ] c");
+        assert_eq!(replace_lines(body, 5, 5, "x"), Err(LineError::OutOfRange { start: 5, end: 5, count: 4 }));
+        assert_eq!(replace_lines(body, 0, 1, "x"), Err(LineError::Inverted { start: 0, end: 1 }));
     }
 
     #[test]

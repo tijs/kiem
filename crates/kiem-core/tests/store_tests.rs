@@ -304,3 +304,53 @@ fn set_todo_checked_errors_on_missing_note_or_bad_index() {
         Err(StoreError::Document { .. })
     ));
 }
+
+#[test]
+fn editing_a_multibyte_body_does_not_corrupt() {
+    // The regression: any note whose stored body has a multi-byte char (here
+    // "↔" and "café ☕") used to corrupt on the NEXT edit, because the splice
+    // was computed in bytes but Automerge indexes text by scalars.
+    let mut store = store_with(&[note(
+        "m",
+        "# Plan\n- [ ] editor ↔ CRDT loop\n- [ ] café ☕ task",
+        "2026-06-28T10:00:00Z",
+    )]);
+    store
+        .update_note("m", "# Plan\n- [x] editor ↔ CRDT loop\n- [ ] café ☕ task")
+        .unwrap();
+    let loaded = store.get_note("m").unwrap().unwrap();
+    assert_eq!(loaded.body.as_str(), "# Plan\n- [x] editor ↔ CRDT loop\n- [ ] café ☕ task");
+    // A second edit that rewrites everything after the multibyte chars, too.
+    store.update_note("m", "# Plan\n- [x] editor ↔ CRDT loop\n- [x] café ☕ DONE").unwrap();
+    assert_eq!(
+        store.get_note("m").unwrap().unwrap().body.as_str(),
+        "# Plan\n- [x] editor ↔ CRDT loop\n- [x] café ☕ DONE"
+    );
+}
+
+#[test]
+fn edit_lines_targets_a_line_and_guards_stale_version() {
+    let mut store = store_with(&[note(
+        "e",
+        "# T #proj/x\n- [ ] a ☕\n- [ ] b\n- [ ] c",
+        "2026-06-28T10:00:00Z",
+    )]);
+    let version = store.note_version("e").unwrap();
+
+    // Replace line 3 ("- [ ] b") only; multibyte line above is untouched.
+    store.edit_lines("e", Some(&version), 3, 3, "- [x] b").unwrap();
+    assert_eq!(
+        store.get_note("e").unwrap().unwrap().body.as_str(),
+        "# T #proj/x\n- [ ] a ☕\n- [x] b\n- [ ] c"
+    );
+
+    // The old version token is now stale → a guarded edit is rejected.
+    assert!(matches!(
+        store.edit_lines("e", Some(&version), 2, 2, "- [x] a ☕"),
+        Err(StoreError::VersionMismatch { .. })
+    ));
+    // Re-reading the version lets it through.
+    let fresh = store.note_version("e").unwrap();
+    store.edit_lines("e", Some(&fresh), 2, 2, "- [x] a ☕").unwrap();
+    assert_eq!(store.list_todo_items_for_tag("proj/x").unwrap().len(), 1);
+}

@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ObjId, ReadDoc, ROOT};
 use autosurgeon::{hydrate, reconcile};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use time::format_description::well_known::Rfc3339;
@@ -32,6 +32,8 @@ pub enum StoreError {
     Db(#[from] rusqlite::Error),
     #[error("note {0} not found")]
     NotFound(String),
+    #[error("note {id} changed since you read it (expected version {expected}, found {found})")]
+    VersionMismatch { id: String, expected: String, found: String },
     #[error("note {0} already exists")]
     DuplicateId(String),
     /// The stored BLOB failed to load or hydrate, or a document failed to
@@ -224,7 +226,46 @@ impl NoteStore {
     /// Replace the note body. Title/tags/todos/modified_at are re-derived and
     /// the existing Automerge document is spliced (history preserved).
     pub fn update_note(&mut self, id: &str, body: &str) -> Result<NoteMetadata, StoreError> {
-        self.mutate(id, |note| note.update_body(body))
+        self.write_body(id, body)
+    }
+
+    /// A short, content-addressed version token for a note (its Automerge
+    /// document heads, hex). Read it alongside a note, pass it back as
+    /// `expect_version` to [`edit_lines`](Self::edit_lines) to reject an edit if
+    /// the note changed underneath you (the todo-index / concurrent-edit race).
+    pub fn note_version(&self, id: &str) -> Result<String, StoreError> {
+        let mut doc = self.load_doc(id)?.ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        Ok(doc_version(&mut doc))
+    }
+
+    /// Replace the 1-based inclusive line range `start..=end` of a note's body
+    /// with `replacement`, applied as a scalar-correct splice. When
+    /// `expect_version` is `Some`, the edit is rejected with
+    /// [`StoreError::VersionMismatch`] unless it matches the note's current
+    /// version — optimistic concurrency for agents editing shared state.
+    pub fn edit_lines(
+        &mut self,
+        id: &str,
+        expect_version: Option<&str>,
+        start: usize,
+        end: usize,
+        replacement: &str,
+    ) -> Result<NoteMetadata, StoreError> {
+        let mut doc = self.load_doc(id)?.ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        if let Some(expected) = expect_version {
+            let found = doc_version(&mut doc);
+            if found != expected {
+                return Err(StoreError::VersionMismatch {
+                    id: id.to_owned(),
+                    expected: expected.to_owned(),
+                    found,
+                });
+            }
+        }
+        let (_, old) = body_obj(&doc, id)?;
+        let new_body = content::replace_lines(&old, start, end, replacement)
+            .map_err(|e| document_err(id, e))?;
+        self.write_body(id, &new_body)
     }
 
     pub fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<NoteMetadata, StoreError> {
@@ -403,6 +444,38 @@ impl NoteStore {
         let mut note: NoteDoc = hydrate(&doc).map_err(|e| document_err(id, e))?;
         change(&mut note);
         reconcile(&mut doc, &note).map_err(|e| document_err(id, e))?;
+        self.persist(id, &mut doc, &note)?;
+        Ok(note.metadata)
+    }
+
+    /// Replace a note's body via a **scalar-indexed** Automerge text splice, then
+    /// re-derive metadata. This bypasses autosurgeon's `Text::update`, whose
+    /// byte-offset splice corrupts any body containing a multi-byte character
+    /// (see [`content::body_splice`]). Metadata reconciles normally — the body
+    /// object carries no autosurgeon edits, so `reconcile` leaves it untouched.
+    fn write_body(&mut self, id: &str, new_body: &str) -> Result<NoteMetadata, StoreError> {
+        use automerge::transaction::Transactable;
+        let mut doc = self
+            .load_doc(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let (obj, old) = body_obj(&doc, id)?;
+        if let Some(s) = content::body_splice(&old, new_body) {
+            doc.splice_text(&obj, s.pos, s.del as isize, &s.insert)
+                .map_err(|e| document_err(id, e))?;
+        }
+        let mut note: NoteDoc = hydrate(&doc).map_err(|e| document_err(id, e))?;
+        note.metadata.title = content::derive_title(new_body);
+        note.metadata.tags = content::extract_tags(new_body);
+        note.metadata.modified_at = now_rfc3339();
+        reconcile(&mut doc, &note).map_err(|e| document_err(id, e))?;
+        self.persist(id, &mut doc, &note)?;
+        Ok(note.metadata)
+    }
+
+    /// Write the note's denormalized columns + saved document to SQLite and
+    /// refresh the search index. Shared by [`mutate`](Self::mutate) and
+    /// [`write_body`](Self::write_body).
+    fn persist(&mut self, _id: &str, doc: &mut AutoCommit, note: &NoteDoc) -> Result<(), StoreError> {
         let m = &note.metadata;
         self.conn.execute(
             "UPDATE notes SET title = ?2, tags = ?3, pinned = ?4, deleted = ?5,
@@ -419,13 +492,13 @@ impl NoteStore {
             ],
         )?;
         if let Some(index) = &mut self.search {
-            if note.metadata.deleted {
-                index.remove_note(&note.metadata.id)?;
+            if m.deleted {
+                index.remove_note(&m.id)?;
             } else {
-                index.index_note(&note.metadata, note.body.as_str())?;
+                index.index_note(m, note.body.as_str())?;
             }
         }
-        Ok(note.metadata)
+        Ok(())
     }
 
     fn load_doc(&self, id: &str) -> Result<Option<AutoCommit>, StoreError> {
@@ -466,6 +539,29 @@ fn row_to_meta(row: &Row<'_>) -> rusqlite::Result<NoteMetadata> {
 
 fn tags_json(tags: &[String]) -> String {
     serde_json::to_string(tags).expect("a Vec<String> always serializes to JSON")
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("RFC 3339 formatting of a valid UTC time cannot fail")
+}
+
+/// A note's content-addressed version: its Automerge document heads as hex.
+/// Takes `&mut` because `AutoCommit::get_heads` flushes the pending transaction.
+fn doc_version(doc: &mut AutoCommit) -> String {
+    doc.get_heads().iter().map(|h| h.to_string()).collect()
+}
+
+/// The note's body Text object and its current value. The body is a Text object
+/// at the document root (`NoteDoc.body`); its absence means a corrupt document.
+fn body_obj(doc: &AutoCommit, id: &str) -> Result<(ObjId, String), StoreError> {
+    let (_, obj) = doc
+        .get(ROOT, "body")
+        .map_err(|e| document_err(id, e))?
+        .ok_or_else(|| document_err(id, "note document has no body text object"))?;
+    let text = doc.text(&obj).map_err(|e| document_err(id, e))?;
+    Ok((obj, text))
 }
 
 fn is_busy(err: &rusqlite::Error) -> bool {

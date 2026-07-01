@@ -59,6 +59,23 @@ enum Command {
         #[arg(long)]
         body: Option<String>,
     },
+    /// Replace a 1-based inclusive line range with --text or stdin (a targeted,
+    /// scalar-safe edit). Pass --expect <version> from `show` to reject the edit
+    /// if the note changed since you read it.
+    EditLines {
+        id: String,
+        /// First line to replace (1-based, inclusive).
+        start: usize,
+        /// Last line to replace (1-based, inclusive; equals start for one line).
+        end: usize,
+        /// Replacement text (may be multi-line); empty deletes the range.
+        /// Hyphen-led values are fine (todo lines start with `- `).
+        #[arg(long, allow_hyphen_values = true)]
+        text: Option<String>,
+        /// Reject unless the note's current version matches (from `show`).
+        #[arg(long)]
+        expect: Option<String>,
+    },
     /// Full-text search over titles, bodies, and tags
     Search {
         query: String,
@@ -207,9 +224,13 @@ fn run() -> Result<()> {
         }
         Command::Show { id } => {
             let note = store.get_note(&id)?.with_context(|| format!("note not found: {id}"))?;
+            let version = store.note_version(&id).map_err(not_found_context(&id))?;
             if cli.json {
                 let mut value = serde_json::to_value(&note.metadata)?;
                 value["body"] = json!(note.body.as_str());
+                // `version` is the token to pass to `edit-lines --expect` so an
+                // edit is rejected if the note changed since this read.
+                value["version"] = json!(version);
                 print_json(&value)?;
             } else {
                 let m = &note.metadata;
@@ -217,8 +238,13 @@ fn run() -> Result<()> {
                 println!("created:  {}", m.created_at);
                 println!("modified: {}", m.modified_at);
                 println!("tags:     {}", m.tags.join(", "));
+                println!("version:  {version}");
                 println!();
-                println!("{}", note.body.as_str());
+                // 1-based line numbers so `edit-lines <id> <start> <end>` can
+                // address a line without the reader counting by hand.
+                for (i, line) in note.body.as_str().split('\n').enumerate() {
+                    println!("{:>4}  {line}", i + 1);
+                }
             }
         }
         Command::Edit { id, body } => {
@@ -230,6 +256,17 @@ fn run() -> Result<()> {
                 print_json(&serde_json::to_value(&meta)?)?;
             } else {
                 println!("Updated: {} ({})", display_title(&meta), meta.id);
+            }
+        }
+        Command::EditLines { id, start, end, text, expect } => {
+            let text = text.or_else(read_stdin).unwrap_or_default();
+            let meta = store
+                .edit_lines(&id, expect.as_deref(), start, end, &text)
+                .map_err(not_found_context(&id))?;
+            if cli.json {
+                print_json(&serde_json::to_value(&meta)?)?;
+            } else {
+                println!("Edited lines {start}..={end} of {} ({})", display_title(&meta), meta.id);
             }
         }
         Command::Search { query, limit } => {
