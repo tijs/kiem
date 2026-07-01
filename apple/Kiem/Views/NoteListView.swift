@@ -4,6 +4,19 @@ import KiemKit
 struct NoteListView: View {
     @Bindable var model: KiemModel
 
+    /// Human section titles for known note types, in display order. Unknown
+    /// non-`note` types get their own section by capitalized name; `note` (the
+    /// default) is the catch-all "Notes" bucket, shown last.
+    private static let typeTitles: [(type: String, title: String)] = [
+        ("brainstorm", "Brainstorms"),
+        ("plan", "Plans"),
+        ("review", "Reviews"),
+        ("decision", "Decisions"),
+        ("solution", "Solutions"),
+        ("doc", "Docs"),
+        ("note", "Notes"),
+    ]
+
     var body: some View {
         Group {
             if model.notes.isEmpty && model.projectTodos.isEmpty {
@@ -25,26 +38,70 @@ struct NoteListView: View {
                             }
                         }
                     }
-                    ForEach(model.notes, id: \.id) { note in
-                        NoteRow(note: note)
-                            .tag(note.id)
-                            .contextMenu {
-                                if model.isViewingTrash {
-                                    Button("Restore") {
-                                        model.restoreNote(id: note.id)
-                                    }
-                                } else {
-                                    Button("Move to Trash", role: .destructive) {
-                                        model.deleteNote(id: note.id)
-                                    }
+                    // Under a project, group notes by kind (Plans, Reviews, …);
+                    // elsewhere (All Notes, tags, filters) keep a flat list.
+                    if model.isViewingProject {
+                        ForEach(noteSections) { section in
+                            Section(section.title) {
+                                ForEach(section.notes, id: \.id) { note in
+                                    noteRow(note)
                                 }
                             }
+                        }
+                    } else {
+                        ForEach(model.notes, id: \.id) { note in
+                            noteRow(note)
+                        }
                     }
                 }
             }
         }
         .searchable(text: $model.searchText, prompt: "Search notes")
     }
+
+    /// Project notes grouped by `noteType`, known kinds first (in `typeTitles`
+    /// order), then any unknown kinds by capitalized name.
+    private var noteSections: [NoteSection] {
+        var byType: [String: [NoteMetadata]] = [:]
+        for note in model.notes {
+            byType[note.noteType, default: []].append(note)
+        }
+        var sections: [NoteSection] = []
+        var placed: Set<String> = []
+        for (type, title) in Self.typeTitles {
+            if let notes = byType[type], !notes.isEmpty {
+                sections.append(NoteSection(title: title, notes: notes))
+                placed.insert(type)
+            }
+        }
+        for type in byType.keys.sorted() where !placed.contains(type) {
+            sections.append(NoteSection(title: type.capitalized, notes: byType[type] ?? []))
+        }
+        return sections
+    }
+
+    @ViewBuilder
+    private func noteRow(_ note: NoteMetadata) -> some View {
+        NoteRow(note: note)
+            .tag(note.id)
+            .contextMenu {
+                if model.isViewingTrash {
+                    Button("Restore") {
+                        model.restoreNote(id: note.id)
+                    }
+                } else {
+                    Button("Move to Trash", role: .destructive) {
+                        model.deleteNote(id: note.id)
+                    }
+                }
+            }
+    }
+}
+
+private struct NoteSection: Identifiable {
+    let title: String
+    let notes: [NoteMetadata]
+    var id: String { title }
 }
 
 /// An open project todo, rendered as a tappable row that completes it.

@@ -376,3 +376,16 @@ fn note_types_are_settable_and_filterable() {
     let m = store.create_note_with_type("# E\n\n#proj/x", DID, "  ").unwrap();
     assert_eq!(m.note_type, "note");
 }
+
+#[test]
+fn set_note_type_reclassifies_and_persists_to_the_column() {
+    let mut store = store_with(&[note("a", "# A\n\n#proj/x", "2026-06-28T10:00:00Z")]);
+    assert_eq!(store.list_by_tag_and_type("proj/x", "note").unwrap().len(), 1);
+    store.set_note_type("a", "plan").unwrap();
+    // The denormalized column (what list reads) must reflect the new type.
+    assert_eq!(store.list_by_tag_and_type("proj/x", "plan").unwrap().len(), 1);
+    assert!(store.list_by_tag_and_type("proj/x", "note").unwrap().is_empty());
+    // Empty resets to the default.
+    store.set_note_type("a", "").unwrap();
+    assert_eq!(store.get_note("a").unwrap().unwrap().metadata.note_type, "note");
+}

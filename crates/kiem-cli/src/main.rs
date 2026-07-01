@@ -171,6 +171,12 @@ enum NoteAction {
         #[arg(long = "type")]
         note_type: Option<String>,
     },
+    /// Reclassify a note's kind: kiem note set-type <id> <type>
+    SetType {
+        note_id: String,
+        /// New kind (empty resets to the default note)
+        note_type: String,
+    },
 }
 
 fn main() {
@@ -433,6 +439,14 @@ fn run() -> Result<()> {
                     print_json(&serde_json::to_value(&meta)?)?;
                 } else {
                     println!("Added to {tag}: {} ({})", display_title(&meta), meta.id);
+                }
+            }
+            NoteAction::SetType { note_id, note_type } => {
+                let meta = store.set_note_type(&note_id, &note_type).map_err(not_found_context(&note_id))?;
+                if cli.json {
+                    print_json(&serde_json::to_value(&meta)?)?;
+                } else {
+                    println!("Set {} to type {}", meta.id, meta.note_type);
                 }
             }
         },

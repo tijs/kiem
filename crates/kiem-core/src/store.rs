@@ -157,6 +157,21 @@ impl NoteStore {
         self.insert_note(&note)
     }
 
+    /// Reclassify an existing note's `note_type` (an empty value resets it to the
+    /// default). Bumps `modified_at`; leaves body/title/tags untouched.
+    pub fn set_note_type(&mut self, id: &str, note_type: &str) -> Result<NoteMetadata, StoreError> {
+        let trimmed = note_type.trim();
+        let new_type = if trimmed.is_empty() {
+            crate::note::DEFAULT_NOTE_TYPE.to_owned()
+        } else {
+            trimmed.to_owned()
+        };
+        self.mutate(id, move |note| {
+            note.metadata.note_type = new_type;
+            note.metadata.modified_at = now_rfc3339();
+        })
+    }
+
     /// Notes carrying `tag`, filtered to a single `note_type` (most recent
     /// first). Backs `kiem notes --type` and the app's per-project grouping.
     pub fn list_by_tag_and_type(
@@ -509,7 +524,7 @@ impl NoteStore {
         let m = &note.metadata;
         self.conn.execute(
             "UPDATE notes SET title = ?2, tags = ?3, pinned = ?4, deleted = ?5,
-             has_todos = ?6, modified_at = ?7, doc = ?8 WHERE id = ?1",
+             has_todos = ?6, modified_at = ?7, note_type = ?8, doc = ?9 WHERE id = ?1",
             params![
                 m.id,
                 m.title,
@@ -518,6 +533,7 @@ impl NoteStore {
                 m.deleted,
                 content::has_unchecked_todos(note.body.as_str()),
                 m.modified_at,
+                m.note_type,
                 doc.save(),
             ],
         )?;
