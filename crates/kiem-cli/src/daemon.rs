@@ -1,298 +1,143 @@
-//! The sync daemon: peer discovery + Automerge sync over TCP.
+//! The sync daemon: iroh-based P2P sync.
 //!
-//! Connections carry the framed protocol from `kiem_core::protocol`. The
-//! first frame each way is a control frame holding the sender's peer id;
-//! after that, data frames carry per-document sync messages. Each connection
-//! runs a reader thread (apply incoming, respond immediately) and a ticker
-//! thread (periodic sync round, which also picks up local edits made by
-//! other `kiem` processes against the same data dir).
-//!
-//! Discovery is mDNS (`_kiem._tcp.local.`) via `mdns-sd`; `--connect` gives
-//! direct addresses (tests, and later cross-network). To avoid duplicate
-//! links when two peers discover each other simultaneously, only the side
-//! with the lexicographically smaller peer id dials.
+//! Connections are driven by `kiem_sync::run_session`, which speaks the
+//! framed protocol from `kiem_core::protocol` over one bidirectional iroh
+//! stream per connection. Peers come from the known-peers trust list
+//! (`kiem_sync::KnownPeers`) rather than LAN broadcast — iroh's discovery and
+//! relay find a peer wherever it actually is. `kiem pair` manages that list.
 //!
 //! Status for `kiem sync-status` is published as `sync-status.json` in the
 //! data dir, rewritten every second by a heartbeat loop.
 
-use std::collections::HashMap;
-use std::io::{BufReader, BufWriter, Write};
-use std::net::{TcpListener, TcpStream};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use kiem_core::protocol::{read_frame, write_frame, Frame};
+use iroh::endpoint::Connection;
 use kiem_core::store::NoteStore;
 use kiem_core::sync::SyncEngine;
+use kiem_sync::{Endpoint, EndpointAddr, EndpointId, KnownPeers, SharedState};
 use serde_json::json;
 
 pub struct Options {
     pub data_dir: PathBuf,
-    pub listen: String,
-    pub connect: Vec<String>,
-    pub mdns: bool,
     pub interval: Duration,
 }
 
-const SERVICE_TYPE: &str = "_kiem._tcp.local.";
 const STATUS_FILE: &str = "sync-status.json";
+const IDENTITY_FILE: &str = "identity.key";
+const PEERS_FILE: &str = "known-peers";
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 struct Daemon {
-    peer_id: String,
+    endpoint: Endpoint,
     data_dir: PathBuf,
-    listen_port: Mutex<u16>,
-    state: Mutex<(NoteStore, SyncEngine)>,
-    /// peer id → remote address, for status + duplicate-connection dedupe.
-    peers: Mutex<HashMap<String, String>>,
+    state: SharedState,
+    /// Peers with a live connection right now, for status + dial/accept dedupe.
+    connected: Mutex<HashSet<EndpointId>>,
     interval: Duration,
 }
 
 pub fn run(opts: Options) -> Result<()> {
-    let peer_id = load_or_create_peer_id(&opts.data_dir)?;
+    tokio::runtime::Runtime::new()
+        .context("starting async runtime")?
+        .block_on(run_async(opts))
+}
+
+async fn run_async(opts: Options) -> Result<()> {
+    let secret_key = kiem_sync::load_or_create(&opts.data_dir.join(IDENTITY_FILE))
+        .context("loading device identity")?;
     let store = NoteStore::open_dir(&opts.data_dir)
         .with_context(|| format!("opening data directory {}", opts.data_dir.display()))?;
-    let listener =
-        TcpListener::bind(&opts.listen).with_context(|| format!("binding {}", opts.listen))?;
-    let port = listener.local_addr()?.port();
+    let endpoint = kiem_sync::bind(secret_key)
+        .await
+        .context("binding iroh endpoint")?;
+
+    eprintln!("kiem sync: endpoint {} ready", endpoint.id());
 
     let daemon = Arc::new(Daemon {
-        peer_id: peer_id.clone(),
+        endpoint,
         data_dir: opts.data_dir.clone(),
-        listen_port: Mutex::new(port),
-        state: Mutex::new((store, SyncEngine::new())),
-        peers: Mutex::new(HashMap::new()),
+        state: Arc::new(Mutex::new((store, SyncEngine::new()))),
+        connected: Mutex::new(HashSet::new()),
         interval: opts.interval,
     });
 
-    eprintln!("kiem sync: peer {peer_id} listening on port {port}");
+    tokio::spawn(accept_loop(daemon.clone()));
 
-    {
-        let daemon = daemon.clone();
-        std::thread::spawn(move || accept_loop(daemon, listener));
+    let known = KnownPeers::load(&daemon.data_dir.join(PEERS_FILE)).context("loading known peers")?;
+    for id in known.ids().to_vec() {
+        tokio::spawn(dial_loop(daemon.clone(), id));
     }
-    for addr in &opts.connect {
-        let daemon = daemon.clone();
-        let addr = addr.clone();
-        std::thread::spawn(move || dial_loop(daemon, addr));
-    }
-    // Keep the mDNS daemon alive for the process lifetime by holding it here.
-    let _mdns = if opts.mdns {
-        Some(start_mdns(daemon.clone(), port)?)
-    } else {
-        None
-    };
 
     // Heartbeat: publish status every second, forever.
     loop {
         write_status(&daemon)?;
-        std::thread::sleep(Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
-fn accept_loop(daemon: Arc<Daemon>, listener: TcpListener) {
-    for stream in listener.incoming().flatten() {
-        let daemon = daemon.clone();
-        std::thread::spawn(move || {
-            if let Err(err) = handle_connection(daemon, stream) {
-                eprintln!("kiem sync: connection ended: {err:#}");
-            }
-        });
-    }
-}
-
-/// Endless dial for explicit `--connect` addresses (fixed setups; covers
-/// reconnection after the remote restarts).
-fn dial_loop(daemon: Arc<Daemon>, addr: String) {
+async fn accept_loop(daemon: Arc<Daemon>) {
     loop {
-        match TcpStream::connect(&addr) {
-            Ok(stream) => {
-                if let Err(err) = handle_connection(daemon.clone(), stream) {
-                    eprintln!("kiem sync: connection to {addr} ended: {err:#}");
-                }
+        match kiem_sync::accept(&daemon.endpoint).await {
+            Ok(Some(connection)) => {
+                let daemon = daemon.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_connection(daemon, connection, false).await {
+                        eprintln!("kiem sync: connection ended: {err:#}");
+                    }
+                });
             }
-            Err(err) => eprintln!("kiem sync: cannot reach {addr}: {err}"),
+            Ok(None) => return, // endpoint closed
+            Err(err) => eprintln!("kiem sync: accept error: {err:#}"),
         }
-        std::thread::sleep(RECONNECT_DELAY);
     }
 }
 
-/// Bounded dial for an mDNS-discovered peer: stop as soon as the peer is
-/// connected (possibly via another address or its own dial), give up after
-/// a few rounds — the next mDNS resolution retriggers discovery anyway.
-fn dial_discovered(daemon: Arc<Daemon>, instance: String, targets: Vec<std::net::SocketAddr>) {
-    for _ in 0..5 {
-        if daemon.peers.lock().unwrap().contains_key(&instance) {
-            return;
-        }
-        for target in &targets {
-            if let Ok(stream) = TcpStream::connect(target) {
-                if let Err(err) = handle_connection(daemon.clone(), stream) {
-                    eprintln!("kiem sync: connection to {instance} ended: {err:#}");
+/// Endless dial for a known peer — covers reconnection after a restart or a
+/// network change, which is the entire point of moving off LAN-only mDNS.
+async fn dial_loop(daemon: Arc<Daemon>, id: EndpointId) {
+    loop {
+        if !daemon.connected.lock().unwrap().contains(&id) {
+            match kiem_sync::connect(&daemon.endpoint, EndpointAddr::from(id)).await {
+                Ok(connection) => {
+                    if let Err(err) = handle_connection(daemon.clone(), connection, true).await {
+                        eprintln!("kiem sync: connection to {id} ended: {err:#}");
+                    }
                 }
-                return;
+                Err(err) => eprintln!("kiem sync: cannot reach {id}: {err}"),
             }
         }
-        std::thread::sleep(RECONNECT_DELAY);
+        tokio::time::sleep(RECONNECT_DELAY).await;
     }
 }
 
-/// Hello exchange, then reader loop + sync ticker until the peer goes away.
-fn handle_connection(daemon: Arc<Daemon>, stream: TcpStream) -> Result<()> {
-    let remote = stream.peer_addr()?.to_string();
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let writer = Arc::new(Mutex::new(BufWriter::new(stream)));
-
-    write_locked(&writer, &Frame::control(daemon.peer_id.as_bytes().to_vec()))?;
-    let hello = read_frame(&mut reader)?;
-    anyhow::ensure!(hello.is_control(), "peer did not start with a hello frame");
-    let peer = String::from_utf8(hello.payload).context("peer id is not UTF-8")?;
-
-    if peer == daemon.peer_id {
-        return Ok(()); // mDNS found ourselves
-    }
-    {
-        let mut peers = daemon.peers.lock().unwrap();
-        if peers.contains_key(&peer) {
-            return Ok(()); // already linked to this peer
-        }
-        peers.insert(peer.clone(), remote);
+/// Runs one session to completion. `dialed` picks which side opens the
+/// bidirectional stream (see `kiem_sync::run_session`).
+async fn handle_connection(daemon: Arc<Daemon>, connection: Connection, dialed: bool) -> Result<()> {
+    let peer = connection.remote_id();
+    if !daemon.connected.lock().unwrap().insert(peer) {
+        return Ok(()); // already linked to this peer (a dial/accept race)
     }
     eprintln!("kiem sync: connected to peer {peer}");
-
-    // Ticker: periodic full sync round (also picks up local edits).
-    let ticker = {
-        let daemon = daemon.clone();
-        let writer = writer.clone();
-        let peer = peer.clone();
-        std::thread::spawn(move || {
-            while sync_round(&daemon, &peer, &writer).is_ok() {
-                std::thread::sleep(daemon.interval);
-            }
-        })
-    };
-
-    // Reader: apply incoming messages, answer immediately per document.
-    let result = (|| -> Result<()> {
-        loop {
-            let frame = read_frame(&mut reader)?;
-            if frame.is_control() {
-                continue;
-            }
-            let reply = {
-                let (store, engine) = &mut *daemon.state.lock().unwrap();
-                engine.receive_message(store, &peer, &frame.doc_id, &frame.payload)?;
-                engine.generate_message(store, &peer, &frame.doc_id)?
-            };
-            if let Some(payload) = reply {
-                write_locked(&writer, &Frame { doc_id: frame.doc_id, payload })?;
-            }
-        }
-    })();
-
-    daemon.peers.lock().unwrap().remove(&peer);
-    daemon.state.lock().unwrap().1.forget_peer(&peer);
-    drop(writer); // unblock the ticker's next write
-    let _ = ticker.join();
+    let result = kiem_sync::run_session(connection, dialed, daemon.state.clone(), daemon.interval).await;
+    daemon.connected.lock().unwrap().remove(&peer);
     eprintln!("kiem sync: peer {peer} disconnected");
-    result
-}
-
-/// One sync round: offer every known document to the peer.
-fn sync_round(
-    daemon: &Daemon,
-    peer: &str,
-    writer: &Arc<Mutex<BufWriter<TcpStream>>>,
-) -> Result<()> {
-    let frames = {
-        let (store, engine) = &mut *daemon.state.lock().unwrap();
-        let mut frames = Vec::new();
-        for doc_id in engine.doc_ids(store)? {
-            if let Some(payload) = engine.generate_message(store, peer, &doc_id)? {
-                frames.push(Frame { doc_id, payload });
-            }
-        }
-        frames
-    };
-    for frame in &frames {
-        write_locked(writer, frame)?;
-    }
-    Ok(())
-}
-
-fn write_locked(
-    writer: &Arc<Mutex<BufWriter<TcpStream>>>,
-    frame: &Frame,
-) -> Result<()> {
-    let mut w = writer.lock().unwrap();
-    write_frame(&mut *w, frame)?;
-    w.flush()?;
-    Ok(())
-}
-
-fn start_mdns(daemon: Arc<Daemon>, port: u16) -> Result<mdns_sd::ServiceDaemon> {
-    use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
-
-    let mdns = ServiceDaemon::new().context("starting mDNS daemon")?;
-    let hostname = format!("{}.local.", daemon.peer_id);
-    let info = ServiceInfo::new(
-        SERVICE_TYPE,
-        &daemon.peer_id,
-        &hostname,
-        (),
-        port,
-        None,
-    )?
-    .enable_addr_auto();
-    mdns.register(info).context("registering mDNS service")?;
-
-    let receiver = mdns.browse(SERVICE_TYPE).context("browsing mDNS")?;
-    let dialer = daemon.clone();
-    std::thread::spawn(move || {
-        while let Ok(event) = receiver.recv() {
-            if let ServiceEvent::ServiceResolved(info) = event {
-                let instance = info
-                    .get_fullname()
-                    .trim_end_matches(&format!(".{SERVICE_TYPE}"))
-                    .to_string();
-                // Dedupe: lower peer id dials, and never dial ourselves or
-                // an already-connected peer.
-                if instance == dialer.peer_id
-                    || dialer.peer_id > instance
-                    || dialer.peers.lock().unwrap().contains_key(&instance)
-                {
-                    continue;
-                }
-                // Prefer IPv4 (the listener binds an IPv4 any-address);
-                // SocketAddr formatting brackets IPv6 correctly.
-                let port = info.get_port();
-                let mut targets: Vec<std::net::SocketAddr> = info
-                    .get_addresses()
-                    .iter()
-                    .map(|ip| std::net::SocketAddr::new(ip.to_ip_addr(), port))
-                    .collect();
-                targets.sort_by_key(|a| !a.is_ipv4());
-                let daemon = dialer.clone();
-                std::thread::spawn(move || dial_discovered(daemon, instance, targets));
-            }
-        }
-    });
-    Ok(mdns)
+    result.map_err(anyhow::Error::from)
 }
 
 fn write_status(daemon: &Daemon) -> Result<()> {
     let peers: Vec<_> = daemon
-        .peers
+        .connected
         .lock()
         .unwrap()
         .iter()
-        .map(|(id, addr)| json!({"peer_id": id, "address": addr}))
+        .map(|id| json!({"peer_id": id.to_string()}))
         .collect();
     let status = json!({
-        "peer_id": daemon.peer_id,
-        "listen_port": *daemon.listen_port.lock().unwrap(),
+        "endpoint_id": daemon.endpoint.id().to_string(),
         "peers": peers,
         "updated_at_epoch_secs": epoch_secs(),
     });
@@ -322,32 +167,39 @@ pub fn print_status(data_dir: &Path, as_json: bool) -> Result<()> {
     if stale {
         println!("daemon appears stopped (status is {age}s old)");
     }
-    println!("peer:  {}", status["peer_id"].as_str().unwrap_or("?"));
-    println!("port:  {}", status["listen_port"]);
+    println!("endpoint: {}", status["endpoint_id"].as_str().unwrap_or("?"));
     let peers = status["peers"].as_array().cloned().unwrap_or_default();
     if peers.is_empty() {
         println!("peers: none connected");
     } else {
         println!("peers:");
         for p in peers {
-            println!("  {} ({})", p["peer_id"].as_str().unwrap_or("?"), p["address"].as_str().unwrap_or("?"));
+            println!("  {}", p["peer_id"].as_str().unwrap_or("?"));
         }
     }
     Ok(())
 }
 
-fn load_or_create_peer_id(data_dir: &Path) -> Result<String> {
-    std::fs::create_dir_all(data_dir)?;
-    let path = data_dir.join("peer-id");
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let trimmed = existing.trim().to_owned();
-        if !trimmed.is_empty() {
-            return Ok(trimmed);
-        }
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    std::fs::write(&path, &id)?;
-    Ok(id)
+/// `kiem pair show`: this device's shareable ticket (paste/scan on another
+/// device to add it as a known peer).
+pub async fn pair_show(data_dir: &Path) -> Result<String> {
+    let secret_key = kiem_sync::load_or_create(&data_dir.join(IDENTITY_FILE))
+        .context("loading device identity")?;
+    let endpoint = kiem_sync::bind(secret_key)
+        .await
+        .context("binding iroh endpoint")?;
+    let ticket = kiem_sync::my_ticket(&endpoint).to_string();
+    endpoint.close().await;
+    Ok(ticket)
+}
+
+/// `kiem pair add <ticket>`: trust the device behind a pasted/scanned ticket.
+pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointId> {
+    let addr = kiem_sync::parse_ticket(ticket).context("parsing pairing ticket")?;
+    let peers_path = data_dir.join(PEERS_FILE);
+    let mut peers = KnownPeers::load(&peers_path).context("loading known peers")?;
+    peers.add(&peers_path, addr.id).context("saving known peers")?;
+    Ok(addr.id)
 }
 
 fn epoch_secs() -> u64 {

@@ -11,10 +11,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
+iroh = "1.0.1"
 kiem-core = { path = "../kiem-core", features = ["serde"] }
-mdns-sd = "0.20.0"
+kiem-sync = { path = "../kiem-sync" }
 serde_json = "1.0.150"
-uuid = { version = "1.23.3", features = ["v4"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.2"

@@ -10,7 +10,7 @@ mod daemon;
 mod project;
 
 use std::io::{IsTerminal, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -116,24 +116,27 @@ enum Command {
         #[arg(long = "type")]
         note_type: Option<String>,
     },
-    /// Run the sync daemon (foreground): discover peers, keep notes converged
+    /// Run the sync daemon (foreground): connect known peers, keep notes converged
     Sync {
-        /// Listen address (port 0 = ephemeral)
-        #[arg(long, default_value = "0.0.0.0:0")]
-        listen: String,
-        /// Direct peer address to dial (repeatable); used by tests and
-        /// fixed-address setups like a home server
-        #[arg(long)]
-        connect: Vec<String>,
-        /// Disable mDNS discovery (direct connections only)
-        #[arg(long)]
-        no_mdns: bool,
         /// Sync round interval in milliseconds
         #[arg(long, default_value_t = 1000)]
         interval_ms: u64,
     },
     /// Show the running daemon's peers and state
     SyncStatus,
+    /// Manage trusted sync peers (pairing replaces LAN auto-discovery)
+    Pair {
+        #[command(subcommand)]
+        action: PairAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PairAction {
+    /// Print this device's shareable ticket; paste/scan it on another device
+    Show,
+    /// Trust the device behind a pasted/scanned ticket
+    Add { ticket: String },
 }
 
 #[derive(Subcommand)]
@@ -194,18 +197,20 @@ fn run() -> Result<()> {
             .context("cannot determine home directory; pass --data-dir")?
             .join(".kiem"),
     };
-    // The daemon owns its store (long-lived); sync-status needs none.
+    // The daemon owns its store (long-lived); sync-status/pair need none.
     match cli.command {
-        Command::Sync { listen, connect, no_mdns, interval_ms } => {
+        Command::Sync { interval_ms } => {
             return daemon::run(daemon::Options {
                 data_dir,
-                listen,
-                connect,
-                mdns: !no_mdns,
                 interval: std::time::Duration::from_millis(interval_ms.max(100)),
             });
         }
         Command::SyncStatus => return daemon::print_status(&data_dir, cli.json),
+        Command::Pair { action } => {
+            return tokio::runtime::Runtime::new()
+                .context("starting async runtime")?
+                .block_on(run_pair(action, &data_dir, cli.json));
+        }
         _ => {}
     }
 
@@ -465,7 +470,31 @@ fn run() -> Result<()> {
                 }
             }
         }
-        Command::Sync { .. } | Command::SyncStatus => unreachable!("handled above"),
+        Command::Sync { .. } | Command::SyncStatus | Command::Pair { .. } => {
+            unreachable!("handled above")
+        }
+    }
+    Ok(())
+}
+
+async fn run_pair(action: PairAction, data_dir: &Path, as_json: bool) -> Result<()> {
+    match action {
+        PairAction::Show => {
+            let ticket = daemon::pair_show(data_dir).await?;
+            if as_json {
+                print_json(&json!({"ticket": ticket}))?;
+            } else {
+                println!("{ticket}");
+            }
+        }
+        PairAction::Add { ticket } => {
+            let id = daemon::pair_add(data_dir, &ticket)?;
+            if as_json {
+                print_json(&json!({"added": id.to_string()}))?;
+            } else {
+                println!("added peer {id}");
+            }
+        }
     }
     Ok(())
 }

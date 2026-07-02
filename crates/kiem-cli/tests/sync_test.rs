@@ -1,4 +1,5 @@
-//! Two real `kiem sync` daemon processes converging over TCP (no mDNS).
+//! Two real `kiem sync` daemon processes converging over a real iroh
+//! connection, paired via `kiem pair` tickets instead of LAN discovery.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -40,36 +41,24 @@ fn kiem_json(data_dir: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).expect("valid JSON output")
 }
 
-fn spawn_daemon(data_dir: &Path, extra: &[&str]) -> DaemonGuard {
+/// Pairs two devices bidirectionally: each trusts the other's ticket.
+fn pair(dir_a: &Path, dir_b: &Path) {
+    let ticket_a = kiem_json(dir_a, &["pair", "show", "--json"]);
+    let ticket_b = kiem_json(dir_b, &["pair", "show", "--json"]);
+    kiem_json(dir_a, &["pair", "add", "--json", ticket_b["ticket"].as_str().unwrap()]);
+    kiem_json(dir_b, &["pair", "add", "--json", ticket_a["ticket"].as_str().unwrap()]);
+}
+
+fn spawn_daemon(data_dir: &Path) -> DaemonGuard {
     let child = Command::new(kiem_bin())
         .arg("--data-dir")
         .arg(data_dir)
-        .args(["sync", "--no-mdns", "--listen", "127.0.0.1:0", "--interval-ms", "200"])
-        .args(extra)
+        .args(["sync", "--interval-ms", "200"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("daemon spawns");
     DaemonGuard(child)
-}
-
-/// Poll the daemon's status file until it publishes its listen port.
-fn wait_for_port(data_dir: &Path) -> u16 {
-    let deadline = Instant::now() + WAIT;
-    let path = data_dir.join("sync-status.json");
-    while Instant::now() < deadline {
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
-                if let Some(port) = v["listen_port"].as_u64() {
-                    if port > 0 {
-                        return port as u16;
-                    }
-                }
-            }
-        }
-        std::thread::sleep(POLL);
-    }
-    panic!("daemon never published its port in {}", path.display());
 }
 
 /// Poll `predicate` against `kiem list --json` until it holds.
@@ -96,10 +85,9 @@ fn two_daemons_converge_and_stay_in_sync() {
     // A note created on A before B even exists.
     kiem_json(dir_a.path(), &["create", "--json", "--body", "# From A\n\nearly note #sync"]);
 
-    let _daemon_a = spawn_daemon(dir_a.path(), &[]);
-    let port_a = wait_for_port(dir_a.path());
-
-    let _daemon_b = spawn_daemon(dir_b.path(), &[&format!("--connect=127.0.0.1:{port_a}")]);
+    pair(dir_a.path(), dir_b.path());
+    let _daemon_a = spawn_daemon(dir_a.path());
+    let _daemon_b = spawn_daemon(dir_b.path());
 
     // AE5/AE2: B receives the pre-existing note after connecting.
     wait_for_notes(dir_b.path(), |notes| {
