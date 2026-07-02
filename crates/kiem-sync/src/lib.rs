@@ -5,11 +5,13 @@
 
 mod endpoint;
 mod identity;
+mod mesh;
 mod peers;
 mod session;
 
 pub use endpoint::{accept, bind, connect, EndpointError, ALPN};
 pub use identity::{load_or_create, IdentityError};
 pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+pub use mesh::{pair_add, pair_ticket, Mesh, MeshError, MeshEvents, NoEvents};
 pub use peers::{my_ticket, parse_ticket, KnownPeers, PeersError};
 pub use session::{run as run_session, SessionError, SharedState};
