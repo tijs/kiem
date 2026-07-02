@@ -5,7 +5,9 @@
 
 mod endpoint;
 mod identity;
+mod peers;
 
 pub use endpoint::{accept, bind, connect, EndpointError, ALPN};
 pub use identity::{load_or_create, IdentityError};
 pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
+pub use peers::{my_ticket, parse_ticket, KnownPeers, PeersError};
