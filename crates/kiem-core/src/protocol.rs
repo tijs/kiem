@@ -10,10 +10,12 @@
 
 use std::io::{Read, Write};
 
-/// Note ids are UUIDs today; leave generous headroom.
-const MAX_DOC_ID_LEN: u32 = 1024;
+/// Note ids are UUIDs today; leave generous headroom. `pub` so other
+/// transports (e.g. kiem-sync's async iroh codec) can enforce the same limits
+/// without duplicating the numbers.
+pub const MAX_DOC_ID_LEN: u32 = 1024;
 /// A full document snapshot travels inside one sync message.
-const MAX_PAYLOAD_LEN: u32 = 64 * 1024 * 1024;
+pub const MAX_PAYLOAD_LEN: u32 = 64 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {

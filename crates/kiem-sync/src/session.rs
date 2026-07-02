@@ -1,0 +1,170 @@
+//! Drives one iroh connection end-to-end: opens the single bidirectional
+//! stream this protocol multiplexes everything over, then runs a reader loop
+//! (apply incoming, reply per document) alongside a ticker (periodic full
+//! sync round — also picks up local edits from other processes) until the
+//! connection closes.
+//!
+//! This ports `kiem-cli`'s former TCP daemon loop onto iroh: same framing
+//! (`kiem_core::protocol`), same [`SyncEngine`] semantics, async instead of
+//! OS threads. iroh authenticates the peer's `EndpointId` as part of the
+//! connection handshake, so — unlike the TCP version — there's no need for a
+//! hello frame to identify who's on the other end.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use iroh::endpoint::{Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError};
+use kiem_core::protocol::{ProtocolError, MAX_DOC_ID_LEN, MAX_PAYLOAD_LEN};
+use kiem_core::store::NoteStore;
+use kiem_core::sync::{SyncEngine, SyncError};
+
+#[derive(thiserror::Error, Debug)]
+pub enum SessionError {
+    #[error("connection error: {0}")]
+    Connection(#[from] ConnectionError),
+    #[error("stream write error: {0}")]
+    Write(#[from] WriteError),
+    #[error("stream read error: {0}")]
+    Read(#[from] ReadExactError),
+    #[error("protocol error: {0}")]
+    Protocol(#[from] ProtocolError),
+    #[error("sync error: {0}")]
+    Sync(#[from] SyncError),
+}
+
+/// Shared, lockable note store + sync engine — the same pairing
+/// `kiem-cli`'s daemon holds today, just behind an `Arc` for async tasks.
+pub type SharedState = Arc<Mutex<(NoteStore, SyncEngine)>>;
+
+/// Runs one peer session until the connection closes. `dialed` picks which
+/// side opens the bidirectional stream (mirrors QUIC's client/server roles;
+/// exactly one side must open while the other accepts).
+pub async fn run(
+    connection: Connection,
+    dialed: bool,
+    state: SharedState,
+    interval: Duration,
+) -> Result<(), SessionError> {
+    let peer = connection.remote_id().to_string();
+    let (send, mut recv) = if dialed {
+        connection.open_bi().await?
+    } else {
+        connection.accept_bi().await?
+    };
+    let send = Arc::new(tokio::sync::Mutex::new(send));
+
+    let ticker = tokio::spawn(ticker_loop(
+        state.clone(),
+        peer.clone(),
+        send.clone(),
+        interval,
+    ));
+
+    let result = reader_loop(&mut recv, &state, &peer, &send).await;
+
+    state.lock().unwrap().1.forget_peer(&peer);
+    ticker.abort();
+    result
+}
+
+async fn ticker_loop(
+    state: SharedState,
+    peer: String,
+    send: Arc<tokio::sync::Mutex<SendStream>>,
+    interval: Duration,
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+        if sync_round(&state, &peer, &send).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// One sync round: offer every known document to the peer.
+async fn sync_round(
+    state: &SharedState,
+    peer: &str,
+    send: &tokio::sync::Mutex<SendStream>,
+) -> Result<(), SessionError> {
+    let frames = {
+        let (store, engine) = &mut *state.lock().unwrap();
+        let mut frames = Vec::new();
+        for doc_id in engine.doc_ids(store)? {
+            if let Some(payload) = engine.generate_message(store, peer, &doc_id)? {
+                frames.push((doc_id, payload));
+            }
+        }
+        frames
+    };
+    let mut send = send.lock().await;
+    for (doc_id, payload) in frames {
+        write_frame(&mut send, &doc_id, &payload).await?;
+    }
+    Ok(())
+}
+
+async fn reader_loop(
+    recv: &mut RecvStream,
+    state: &SharedState,
+    peer: &str,
+    send: &tokio::sync::Mutex<SendStream>,
+) -> Result<(), SessionError> {
+    loop {
+        let (doc_id, payload) = read_frame(recv).await?;
+        let reply = {
+            let (store, engine) = &mut *state.lock().unwrap();
+            engine.receive_message(store, peer, &doc_id, &payload)?;
+            engine.generate_message(store, peer, &doc_id)?
+        };
+        if let Some(reply_payload) = reply {
+            let mut send = send.lock().await;
+            write_frame(&mut send, &doc_id, &reply_payload).await?;
+        }
+    }
+}
+
+/// Wire format matches `kiem_core::protocol` exactly: `[doc_id_len][doc_id
+/// bytes][payload_len][payload bytes]`, all lengths big-endian u32. No
+/// control frames — iroh's handshake already authenticates the peer id.
+async fn write_frame(send: &mut SendStream, doc_id: &str, payload: &[u8]) -> Result<(), SessionError> {
+    let id = doc_id.as_bytes();
+    check_len("doc_id", id.len(), MAX_DOC_ID_LEN)?;
+    check_len("payload", payload.len(), MAX_PAYLOAD_LEN)?;
+    send.write_all(&(id.len() as u32).to_be_bytes()).await?;
+    send.write_all(id).await?;
+    send.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+    send.write_all(payload).await?;
+    Ok(())
+}
+
+async fn read_frame(recv: &mut RecvStream) -> Result<(String, Vec<u8>), SessionError> {
+    let id_len = read_len(recv, "doc_id", MAX_DOC_ID_LEN).await?;
+    let mut id = vec![0u8; id_len as usize];
+    recv.read_exact(&mut id).await?;
+    let doc_id = String::from_utf8(id).map_err(|_| ProtocolError::BadDocId)?;
+
+    let payload_len = read_len(recv, "payload", MAX_PAYLOAD_LEN).await?;
+    let mut payload = vec![0u8; payload_len as usize];
+    recv.read_exact(&mut payload).await?;
+    Ok((doc_id, payload))
+}
+
+async fn read_len(recv: &mut RecvStream, field: &'static str, max: u32) -> Result<u32, SessionError> {
+    let mut buf = [0u8; 4];
+    recv.read_exact(&mut buf).await?;
+    let len = u32::from_be_bytes(buf);
+    check_len(field, len as usize, max)?;
+    Ok(len)
+}
+
+fn check_len(field: &'static str, len: usize, max: u32) -> Result<(), ProtocolError> {
+    if len as u64 > max as u64 {
+        return Err(ProtocolError::Oversized {
+            field,
+            len: len as u32,
+            max,
+        });
+    }
+    Ok(())
+}

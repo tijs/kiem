@@ -1,0 +1,80 @@
+//! Exercises `session::run` over a real (loopback) iroh connection, not just
+//! the framing logic. Bounded by a timeout: this needs to bind real UDP
+//! sockets, which a fully network-isolated sandbox may refuse — a timeout
+//! failure there means "no local networking available", not a protocol bug.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use kiem_core::note::NoteDoc;
+use kiem_core::store::NoteStore;
+use kiem_core::sync::SyncEngine;
+use kiem_sync::SharedState;
+
+const TS: &str = "2026-01-01T00:00:00Z";
+
+fn empty_state() -> SharedState {
+    Arc::new(Mutex::new((
+        NoteStore::open_in_memory_with_search().unwrap(),
+        SyncEngine::new(),
+    )))
+}
+
+#[tokio::test]
+async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
+    let outcome = tokio::time::timeout(Duration::from_secs(20), async {
+        let a_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
+        let b_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
+        let b_addr = b_ep.addr();
+
+        let a_state = empty_state();
+        let b_state = empty_state();
+        a_state
+            .lock()
+            .unwrap()
+            .0
+            .insert_note(&NoteDoc::new_with(
+                "n1".into(),
+                "# Hello\n\nfrom A",
+                "did:a",
+                TS.into(),
+            ))
+            .unwrap();
+
+        let accept_task = tokio::spawn({
+            let b_ep = b_ep.clone();
+            let b_state = b_state.clone();
+            async move {
+                let conn = kiem_sync::accept(&b_ep).await.unwrap().unwrap();
+                kiem_sync::run_session(conn, false, b_state, Duration::from_millis(20)).await
+            }
+        });
+
+        let conn = kiem_sync::connect(&a_ep, b_addr).await.unwrap();
+        let connect_task = tokio::spawn(kiem_sync::run_session(
+            conn,
+            true,
+            a_state.clone(),
+            Duration::from_millis(20),
+        ));
+
+        let mut synced = false;
+        for _ in 0..200 {
+            if b_state.lock().unwrap().0.get_note("n1").unwrap().is_some() {
+                synced = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        accept_task.abort();
+        connect_task.abort();
+        assert!(synced, "note did not sync from A to B over the iroh connection");
+    })
+    .await;
+
+    assert!(
+        outcome.is_ok(),
+        "timed out waiting for a loopback iroh connection — likely no local networking in this environment"
+    );
+}
