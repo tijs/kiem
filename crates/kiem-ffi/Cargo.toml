@@ -9,7 +9,9 @@ crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
 kiem-core = { path = "../kiem-core" }
+kiem-sync = { path = "../kiem-sync" }
 thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 uniffi = "0.31.1"
 
 [dev-dependencies]

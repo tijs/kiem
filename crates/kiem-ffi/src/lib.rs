@@ -9,12 +9,41 @@
 //! The mirrored record types exist because `kiem-core` stays FFI-free by
 //! design; `From` impls keep the mapping mechanical.
 
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use kiem_core::store::{NoteStore, StoreError};
 use kiem_core::sync::SyncEngine;
+use kiem_sync::SharedState;
 
 uniffi::setup_scaffolding!();
+
+/// Forwarded to Swift as sync mesh peers connect/disconnect.
+#[uniffi::export(with_foreign)]
+pub trait PeerEvents: Send + Sync {
+    fn on_connected(&self, peer_id: String);
+    fn on_disconnected(&self, peer_id: String);
+}
+
+struct EventsAdapter(Arc<dyn PeerEvents>);
+
+impl kiem_sync::MeshEvents for EventsAdapter {
+    fn on_connected(&self, peer: kiem_sync::EndpointId) {
+        self.0.on_connected(peer.to_string());
+    }
+    fn on_disconnected(&self, peer: kiem_sync::EndpointId) {
+        self.0.on_disconnected(peer.to_string());
+    }
+    fn on_error(&self, context: &str, error: &str) {
+        eprintln!("kiem sync: {context}: {error}");
+    }
+}
+
+struct SyncHandle {
+    runtime: tokio::runtime::Runtime,
+    mesh: Arc<kiem_sync::Mesh>,
+}
 
 #[derive(Debug, uniffi::Record)]
 pub struct NoteMetadata {
@@ -118,7 +147,9 @@ impl From<kiem_core::sync::SyncError> for KiemError {
 
 #[derive(uniffi::Object)]
 pub struct KiemStore {
-    state: Mutex<(NoteStore, SyncEngine)>,
+    data_dir: PathBuf,
+    state: SharedState,
+    sync: Mutex<Option<SyncHandle>>,
 }
 
 impl KiemStore {
@@ -138,8 +169,13 @@ impl KiemStore {
     /// Open (or create) the data directory: `kiem.db` + search index.
     #[uniffi::constructor]
     pub fn open(data_dir: String) -> Result<Self, KiemError> {
-        let store = NoteStore::open_dir(std::path::Path::new(&data_dir))?;
-        Ok(KiemStore { state: Mutex::new((store, SyncEngine::new())) })
+        let data_dir = PathBuf::from(data_dir);
+        let store = NoteStore::open_dir(&data_dir)?;
+        Ok(KiemStore {
+            data_dir,
+            state: Arc::new(Mutex::new((store, SyncEngine::new()))),
+            sync: Mutex::new(None),
+        })
     }
 
     pub fn create_note(&self, body: String, author_did: String) -> Result<NoteMetadata, KiemError> {
@@ -274,6 +310,71 @@ impl KiemStore {
         let mut guard = self.state.lock().expect("KiemStore lock poisoned");
         guard.1.forget_peer(&peer_id);
     }
+
+    // -- P2P sync mesh (kiem-sync / iroh) --
+
+    /// Binds this device's identity, accepts incoming connections, and dials
+    /// every known peer. No-op if already running.
+    pub fn start_sync(&self, interval_ms: u64, events: Arc<dyn PeerEvents>) -> Result<(), KiemError> {
+        let mut sync = self.sync.lock().expect("sync lock poisoned");
+        if sync.is_some() {
+            return Ok(());
+        }
+        let runtime = tokio::runtime::Runtime::new().map_err(sync_err)?;
+        let mesh = runtime
+            .block_on(kiem_sync::Mesh::start(
+                self.data_dir.clone(),
+                self.state.clone(),
+                Duration::from_millis(interval_ms.max(100)),
+                Arc::new(EventsAdapter(events)),
+            ))
+            .map_err(sync_err)?;
+        *sync = Some(SyncHandle { runtime, mesh });
+        Ok(())
+    }
+
+    /// Stops the sync mesh. No-op if not running.
+    pub fn stop_sync(&self) {
+        if let Some(handle) = self.sync.lock().expect("sync lock poisoned").take() {
+            handle.runtime.shutdown_background();
+        }
+    }
+
+    /// This device's shareable pairing ticket.
+    pub fn pair_ticket(&self) -> Result<String, KiemError> {
+        tokio::runtime::Runtime::new()
+            .map_err(sync_err)?
+            .block_on(kiem_sync::pair_ticket(&self.data_dir))
+            .map_err(sync_err)
+    }
+
+    /// Trusts the device behind a pasted/scanned ticket, dialing it right
+    /// away if sync is already running.
+    pub fn add_known_peer(&self, ticket: String) -> Result<String, KiemError> {
+        let addr = kiem_sync::pair_add(&self.data_dir, &ticket).map_err(sync_err)?;
+        let id = addr.id;
+        if let Some(handle) = self.sync.lock().expect("sync lock poisoned").as_ref() {
+            handle.mesh.dial(addr);
+        }
+        Ok(id.to_string())
+    }
+
+    /// Currently-connected peer ids, or empty if sync isn't running.
+    pub fn connected_peers(&self) -> Vec<String> {
+        match self.sync.lock().expect("sync lock poisoned").as_ref() {
+            Some(handle) => handle
+                .mesh
+                .connected_ids()
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+}
+
+fn sync_err(err: impl std::fmt::Display) -> KiemError {
+    KiemError::Sync { message: err.to_string() }
 }
 
 fn into_meta(metas: Vec<kiem_core::note::NoteMetadata>) -> Vec<NoteMetadata> {
@@ -386,5 +487,47 @@ mod tests {
             h.join().unwrap();
         }
         assert!(store.get_note(meta.id).unwrap().unwrap().body.contains("edit"));
+    }
+
+    struct NullEvents;
+    impl PeerEvents for NullEvents {
+        fn on_connected(&self, _peer_id: String) {}
+        fn on_disconnected(&self, _peer_id: String) {}
+    }
+
+    #[test]
+    fn two_stores_sync_over_a_real_iroh_mesh() {
+        let (_dir_a, a) = open_temp();
+        let (_dir_b, b) = open_temp();
+
+        a.create_note("# Mesh\n\nvia ffi sync".into(), "did:a".into()).unwrap();
+
+        let ticket_a = a.pair_ticket().unwrap();
+        let ticket_b = b.pair_ticket().unwrap();
+        a.add_known_peer(ticket_b).unwrap();
+        b.add_known_peer(ticket_a).unwrap();
+
+        a.start_sync(50, Arc::new(NullEvents)).unwrap();
+        b.start_sync(50, Arc::new(NullEvents)).unwrap();
+
+        // Generous: this dials by bare EndpointId with no prior direct-address
+        // hint, so first contact depends on iroh's discovery (DNS/Pkarr) and
+        // relay resolution, which can take tens of seconds depending on
+        // network conditions — a real (if occasionally slow), not simulated,
+        // property of dial-by-id.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        loop {
+            if b.list_notes().unwrap().iter().any(|n| n.title == "Mesh") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "note never synced over the FFI mesh");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        assert_eq!(a.connected_peers().len(), 1);
+        assert_eq!(b.connected_peers().len(), 1);
+
+        a.stop_sync();
+        b.stop_sync();
     }
 }

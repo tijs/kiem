@@ -34,6 +34,9 @@ pub enum MeshError {
 pub trait MeshEvents: Send + Sync + 'static {
     fn on_connected(&self, _peer: EndpointId) {}
     fn on_disconnected(&self, _peer: EndpointId) {}
+    /// A connect/accept attempt failed. `context` is e.g. "accept" or a
+    /// dialed peer id; non-fatal — the mesh keeps retrying.
+    fn on_error(&self, _context: &str, _error: &str) {}
 }
 
 /// A `MeshEvents` that does nothing, for callers that don't need events (the
@@ -75,8 +78,8 @@ impl Mesh {
 
         tokio::spawn(accept_loop(mesh.clone()));
         let known = KnownPeers::load(&mesh.data_dir.join(PEERS_FILE))?;
-        for id in known.ids().to_vec() {
-            tokio::spawn(dial_loop(mesh.clone(), id));
+        for addr in known.addrs().to_vec() {
+            tokio::spawn(dial_loop(mesh.clone(), addr));
         }
         Ok(mesh)
     }
@@ -91,8 +94,8 @@ impl Mesh {
 
     /// Starts dialing a newly-paired peer immediately, without waiting for
     /// the next process restart to pick it up from the known-peers file.
-    pub fn dial(self: &Arc<Self>, id: EndpointId) {
-        tokio::spawn(dial_loop(self.clone(), id));
+    pub fn dial(self: &Arc<Self>, addr: EndpointAddr) {
+        tokio::spawn(dial_loop(self.clone(), addr));
     }
 }
 
@@ -102,22 +105,39 @@ async fn accept_loop(mesh: Arc<Mesh>) {
             Ok(Some(connection)) => {
                 let mesh = mesh.clone();
                 tokio::spawn(async move {
-                    let _ = handle_connection(mesh, connection, false).await;
+                    if let Err(err) = handle_connection(mesh.clone(), connection, false).await {
+                        mesh.events.on_error("accept", &err.to_string());
+                    }
                 });
             }
             Ok(None) => return, // endpoint closed
-            Err(_) => continue,
+            Err(err) => mesh.events.on_error("accept", &err.to_string()),
         }
     }
 }
 
 /// Endless dial for a known peer — covers reconnection after a restart or a
 /// network change, which is the entire point of moving off LAN-only mDNS.
-async fn dial_loop(mesh: Arc<Mesh>, id: EndpointId) {
+///
+/// Only the lexicographically smaller `EndpointId` dials; the other side just
+/// accepts. Without this, both known-peers would dial each other
+/// simultaneously, establishing two independent connections where each side
+/// commits to a different one of the two — so `open_bi`/`accept_bi` never
+/// pair up on either connection and nothing ever syncs, silently.
+async fn dial_loop(mesh: Arc<Mesh>, addr: EndpointAddr) {
+    let id = addr.id;
+    if mesh.endpoint.id() >= id {
+        return;
+    }
     loop {
         if !mesh.connected.lock().unwrap().contains(&id) {
-            if let Ok(connection) = endpoint::connect(&mesh.endpoint, EndpointAddr::from(id)).await {
-                let _ = handle_connection(mesh.clone(), connection, true).await;
+            match endpoint::connect(&mesh.endpoint, addr.clone()).await {
+                Ok(connection) => {
+                    if let Err(err) = handle_connection(mesh.clone(), connection, true).await {
+                        mesh.events.on_error(&id.to_string(), &err.to_string());
+                    }
+                }
+                Err(err) => mesh.events.on_error(&id.to_string(), &err.to_string()),
             }
         }
         tokio::time::sleep(RECONNECT_DELAY).await;
@@ -152,11 +172,13 @@ pub async fn pair_ticket(data_dir: &Path) -> Result<String, MeshError> {
 }
 
 /// Trusts the device behind a pasted/scanned ticket, persisting it to the
-/// known-peers file. Does not require a `Mesh` to be running.
-pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointId, MeshError> {
+/// known-peers file. Does not require a `Mesh` to be running. Returns the
+/// full address (not just the id) so a caller can dial it immediately via
+/// [`Mesh::dial`].
+pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointAddr, MeshError> {
     let addr = peers::parse_ticket(ticket)?;
     let peers_path = data_dir.join(PEERS_FILE);
     let mut known = KnownPeers::load(&peers_path)?;
-    known.add(&peers_path, addr.id)?;
-    Ok(addr.id)
+    known.add(&peers_path, addr.clone())?;
+    Ok(addr)
 }

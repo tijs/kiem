@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-const WAIT: Duration = Duration::from_secs(30);
+// Generous: dial-by-bare-EndpointId depends on iroh's discovery/relay
+// resolution, which can take tens of seconds depending on network
+// conditions — see the finding in kiem-sync's mesh tests.
+const WAIT: Duration = Duration::from_secs(45);
 const POLL: Duration = Duration::from_millis(250);
 
 /// Kills the daemon on drop so no test leaves orphan processes.

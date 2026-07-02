@@ -15,39 +15,42 @@ pub enum PeersError {
         path: String,
         source: std::io::Error,
     },
-    #[error("known-peers file at {path} has an invalid endpoint id on line {line}")]
+    #[error("known-peers file at {path} has an invalid ticket on line {line}")]
     Corrupt { path: String, line: usize },
     #[error("invalid ticket: {0}")]
     InvalidTicket(#[from] iroh_tickets::ParseError),
 }
 
 /// A device's trust list, replacing mDNS's "any peer on the LAN" auto-discovery
-/// with an explicit, one-time pairing step. Persisted as one `EndpointId` per
-/// line — human-readable, diffable, no format ceremony for a handful of entries.
+/// with an explicit, one-time pairing step. Persisted as one ticket per line
+/// (not just the bare id) — a ticket carries relay/direct-address hints that
+/// let `connect` skip a cold discovery lookup, which otherwise adds several
+/// seconds (or fails outright while a peer's Pkarr/DNS record is still
+/// propagating) — see the mesh-flakiness fix this store shipped alongside.
 pub struct KnownPeers {
-    ids: Vec<EndpointId>,
+    addrs: Vec<EndpointAddr>,
 }
 
 impl KnownPeers {
     pub fn load(path: &Path) -> Result<Self, PeersError> {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
-                let mut ids = Vec::new();
+                let mut addrs = Vec::new();
                 for (line_no, line) in contents.lines().enumerate() {
                     let line = line.trim();
                     if line.is_empty() {
                         continue;
                     }
-                    let id: EndpointId = line.parse().map_err(|_| PeersError::Corrupt {
+                    let ticket: EndpointTicket = line.parse().map_err(|_| PeersError::Corrupt {
                         path: path.display().to_string(),
                         line: line_no + 1,
                     })?;
-                    ids.push(id);
+                    addrs.push(ticket.endpoint_addr().clone());
                 }
-                Ok(Self { ids })
+                Ok(Self { addrs })
             }
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                Ok(Self { ids: Vec::new() })
+                Ok(Self { addrs: Vec::new() })
             }
             Err(source) => Err(PeersError::Read {
                 path: path.display().to_string(),
@@ -57,19 +60,23 @@ impl KnownPeers {
     }
 
     pub fn contains(&self, id: &EndpointId) -> bool {
-        self.ids.contains(id)
+        self.addrs.iter().any(|a| &a.id == id)
     }
 
-    pub fn ids(&self) -> &[EndpointId] {
-        &self.ids
+    pub fn ids(&self) -> Vec<EndpointId> {
+        self.addrs.iter().map(|a| a.id).collect()
+    }
+
+    pub fn addrs(&self) -> &[EndpointAddr] {
+        &self.addrs
     }
 
     /// Adds a peer (no-op if already known) and persists the updated list.
-    pub fn add(&mut self, path: &Path, id: EndpointId) -> Result<(), PeersError> {
-        if self.contains(&id) {
+    pub fn add(&mut self, path: &Path, addr: EndpointAddr) -> Result<(), PeersError> {
+        if self.contains(&addr.id) {
             return Ok(());
         }
-        self.ids.push(id);
+        self.addrs.push(addr);
         self.save(path)
     }
 
@@ -81,9 +88,9 @@ impl KnownPeers {
             })?;
         }
         let contents = self
-            .ids
+            .addrs
             .iter()
-            .map(|id| id.to_string())
+            .map(|addr| EndpointTicket::new(addr.clone()).to_string())
             .collect::<Vec<_>>()
             .join("\n");
         std::fs::write(path, contents).map_err(|source| PeersError::Write {
@@ -121,7 +128,7 @@ mod tests {
 
         let addr = parse_ticket(&ticket).unwrap();
         let mut peers = KnownPeers::load(&peers_path).unwrap();
-        peers.add(&peers_path, addr.id).unwrap();
+        peers.add(&peers_path, addr).unwrap();
 
         let reloaded = KnownPeers::load(&peers_path).unwrap();
         assert!(reloaded.contains(&their_id));

@@ -30,6 +30,9 @@ impl MeshEvents for LogEvents {
     fn on_disconnected(&self, peer: EndpointId) {
         eprintln!("kiem sync: peer {peer} disconnected");
     }
+    fn on_error(&self, context: &str, error: &str) {
+        eprintln!("kiem sync: {context}: {error}");
+    }
 }
 
 pub fn run(opts: Options) -> Result<()> {
@@ -113,7 +116,7 @@ pub async fn pair_show(data_dir: &Path) -> Result<String> {
 
 /// `kiem pair add <ticket>`: trust the device behind a pasted/scanned ticket.
 pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointId> {
-    Ok(kiem_sync::pair_add(data_dir, ticket)?)
+    Ok(kiem_sync::pair_add(data_dir, ticket)?.id)
 }
 
 fn epoch_secs() -> u64 {

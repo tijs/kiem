@@ -2316,8 +2316,10 @@ name = "kiem-ffi"
 version = "0.1.0"
 dependencies = [
  "kiem-core",
+ "kiem-sync",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "uniffi",
 ]
 
