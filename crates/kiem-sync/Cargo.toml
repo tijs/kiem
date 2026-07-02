@@ -1,0 +1,14 @@
+[package]
+name = "kiem-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Kiem sync transport: iroh-based P2P connections (identity, discovery, relay), feeding kiem-core's SyncEngine."
+
+[dependencies]
+iroh = "1.0.1"
+iroh-tickets = "1.0.0"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

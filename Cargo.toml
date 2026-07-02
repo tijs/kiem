@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/kiem-core", "crates/kiem-cli", "crates/kiem-ffi"]
+members = ["crates/kiem-core", "crates/kiem-cli", "crates/kiem-ffi", "crates/kiem-sync"]
 
 # Kiem workspace: `kiem-core` (pure library — content derivation, Automerge note
 # model; SQLite + search next), `kiem-cli` (binary, U4+), `kiem-ffi` (UniFFI
-# bridge, U6+). The cli/ffi crates are placeholders until their phases land.
-# `kiem-core` stays publishable (no app-specific assumptions) — it may become a
-# standalone open-source project once an external consumer exists.
+# bridge, U6+), `kiem-sync` (iroh transport: identity, discovery, relay — feeds
+# kiem-core's SyncEngine; kept separate so kiem-core stays free of an async
+# runtime and networking deps). `kiem-core` stays publishable (no app-specific
+# assumptions) — it may become a standalone open-source project once an
+# external consumer exists.
