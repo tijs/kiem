@@ -62,8 +62,12 @@ done
 [[ -f "$API_KEY_PATH" ]] || { echo ".p8 API key not found: $API_KEY_PATH" >&2; exit 66; }
 
 # A fresh random password for the temporary CI keychain (not the .p12's own
-# password) — CI creates and unlocks a scratch keychain per run.
-KEYCHAIN_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32)"
+# password) — CI creates and unlocks a scratch keychain per run. Reads a
+# bounded amount up front (not /dev/urandom piped through head -c, which
+# SIGPIPEs the writer under `set -o pipefail` when head closes early) and
+# truncates in-process instead of via another pipe stage.
+_raw_password="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9')"
+KEYCHAIN_PASSWORD="${_raw_password:0:32}"
 
 echo "Setting secrets on $REPO..."
 base64 -i "$P12_PATH" | gh secret set BUILD_CERTIFICATE_BASE64 --repo "$REPO"
