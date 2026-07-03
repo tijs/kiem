@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.4 - 2026-07-03
+
+- Fixed: after quitting and relaunching, the editor pane could show nothing for a note that visually looked selected — no data was ever lost, but the note's content wouldn't display until you clicked another note and back. Caused by macOS's automatic window/selection restoration desyncing from the app's own state; the app now manages its own window state exclusively.
+
 ## 0.1.0-alpha.3 - 2026-07-03
 
 - Release checksum files (`.sha256`) now use a portable relative filename instead of the CI runner's absolute build path, so `shasum -c` actually works after downloading a release.
