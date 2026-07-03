@@ -25,3 +25,6 @@ xcuserdata/
 # xcodegen output — regenerate with: cd apple && xcodegen generate
 /apple/Kiem.xcodeproj/
 /apple/Kiem/Info.plist
+
+# Packaged release artifacts (built locally, uploaded to GitHub Releases)
+/dist/
