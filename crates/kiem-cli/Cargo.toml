@@ -1,6 +1,6 @@
 [package]
 name = "kiem-cli"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 description = "Kiem CLI: human- and agent-facing command line interface over kiem-core."
 

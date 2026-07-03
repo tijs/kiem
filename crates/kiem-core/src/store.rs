@@ -88,6 +88,7 @@ impl NoteStore {
     /// index. This is what CLI/app surfaces use.
     pub fn open_dir(data_dir: &Path) -> Result<Self, StoreError> {
         std::fs::create_dir_all(data_dir)?;
+        crate::data_version::check_and_backup(data_dir)?;
         let mut store = Self::open(&data_dir.join("kiem.db"))?;
         store.search = Some(SearchIndex::open_in_dir(&data_dir.join("search"))?);
         Ok(store)
