@@ -28,3 +28,4 @@ xcuserdata/
 
 # Packaged release artifacts (built locally, uploaded to GitHub Releases)
 /dist/
+/build/
