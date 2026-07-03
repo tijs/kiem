@@ -97,5 +97,5 @@ jobs:
             gh release create "$TAG" "$DMG" "$DMG.sha256" \
               --title "Kiem $VERSION" \
               --prerelease \
-              --notes "Automated notarized build. See commit history for what changed."
+              --notes-file CHANGELOG.md
           fi
