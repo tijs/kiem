@@ -38,4 +38,6 @@ fi
 xcrun stapler staple "$DMG_PATH"
 xcrun stapler validate "$DMG_PATH"
 spctl --assess --type open --context context:primary-signature --verbose "$DMG_PATH"
-shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+# Re-checksum post-staple (stapling changes the file). A relative filename,
+# not the absolute build path, so `shasum -c` works wherever the file lands.
+(cd "$(dirname "$DMG_PATH")" && shasum -a 256 "$(basename "$DMG_PATH")") > "$DMG_PATH.sha256"

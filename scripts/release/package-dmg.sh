@@ -57,5 +57,5 @@ codesign --force \
   --sign "$SIGNING_IDENTITY" \
   "$DMG_PATH"
 
-shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
+(cd "$DIST_DIR" && shasum -a 256 "$(basename "$DMG_PATH")") > "$DMG_PATH.sha256"
 echo "$DMG_PATH"
