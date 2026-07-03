@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct KiemApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model: KiemModel?
     @State private var startupError: String?
     @State private var cliInstallMessage: String?
