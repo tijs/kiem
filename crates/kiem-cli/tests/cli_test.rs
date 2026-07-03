@@ -200,11 +200,13 @@ fn project_current_resolves_marker_then_dirname() {
     // No marker → slugified directory name.
     let from_name = json_out(kiem_in(data.path(), repo.path()).args(["project", "current", "--json"]));
     assert!(from_name["project"].as_str().unwrap().starts_with("proj/"));
+    assert_eq!(from_name["onboarded"], false, "no marker yet → not onboarded");
 
     // `project add` writes the marker; `current` then resolves to it.
     kiem_in(data.path(), repo.path()).args(["project", "add", "Demo Project"]).assert().success();
     let from_marker = json_out(kiem_in(data.path(), repo.path()).args(["project", "current", "--json"]));
     assert_eq!(from_marker["project"], "proj/demo_project");
+    assert_eq!(from_marker["onboarded"], true, "marker committed → onboarded");
     assert!(repo.path().join(".kiem").is_file(), "marker committed to repo");
     assert!(repo.path().join("AGENTS.md").is_file(), "AGENTS.md pointer written");
 }

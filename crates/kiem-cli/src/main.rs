@@ -376,10 +376,20 @@ fn run() -> Result<()> {
             ProjectAction::Current => {
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let tag = project::resolve(&cwd, None)?;
+                // `resolve` always succeeds via the directory-name fallback, so
+                // success alone doesn't mean the repo is onboarded — check the
+                // marker directly and say so explicitly.
+                let onboarded = project::read_marker(&cwd)?.is_some();
                 if cli.json {
-                    print_json(&json!({"project": tag}))?;
+                    print_json(&json!({"project": tag, "onboarded": onboarded}))?;
                 } else {
                     println!("{tag}");
+                    if !onboarded {
+                        eprintln!(
+                            "(no committed .kiem marker — this is a directory-name guess, \
+                             not an onboarded project; run `kiem project add` to onboard)"
+                        );
+                    }
                 }
             }
         },

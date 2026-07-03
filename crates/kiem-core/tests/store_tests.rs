@@ -356,6 +356,30 @@ fn edit_lines_targets_a_line_and_guards_stale_version() {
 }
 
 #[test]
+fn edit_lines_refuses_to_strip_the_only_tag() {
+    let mut store = store_with(&[note(
+        "e",
+        "# T #proj/x\n- [ ] a\n- [ ] b",
+        "2026-06-28T10:00:00Z",
+    )]);
+
+    // Replacing every line with tag-free text would leave the note with
+    // zero tags — rejected before the write ever lands.
+    match store.edit_lines("e", None, 1, 3, "no tags here") {
+        Err(StoreError::TagsWouldBeLost { id, tags }) => {
+            assert_eq!(id, "e");
+            assert_eq!(tags, vec!["proj/x"]);
+        }
+        other => panic!("expected TagsWouldBeLost, got {other:?}"),
+    }
+
+    // The rejected edit must not have mutated the note.
+    let loaded = store.get_note("e").unwrap().unwrap();
+    assert_eq!(loaded.body.as_str(), "# T #proj/x\n- [ ] a\n- [ ] b");
+    assert_eq!(loaded.metadata.tags, vec!["proj/x"]);
+}
+
+#[test]
 fn note_types_are_settable_and_filterable() {
     let mut store = NoteStore::open_in_memory().unwrap();
     let plan = store

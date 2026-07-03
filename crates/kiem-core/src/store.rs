@@ -34,6 +34,12 @@ pub enum StoreError {
     NotFound(String),
     #[error("note {id} changed since you read it (expected version {expected}, found {found})")]
     VersionMismatch { id: String, expected: String, found: String },
+    #[error(
+        "editing note {id} would remove its only tag(s) ({tags:?}) — it would drop out of \
+         every tag/project filter (including `kiem notes`/`kiem todos` for its project). \
+         Keep at least one `#tag` in the replacement text, or narrow the edited line range."
+    )]
+    TagsWouldBeLost { id: String, tags: Vec<String> },
     #[error("note {0} already exists")]
     DuplicateId(String),
     /// The stored BLOB failed to load or hydrate, or a document failed to
@@ -505,13 +511,18 @@ impl NoteStore {
             .load_doc(id)?
             .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
         let (obj, old) = body_obj(&doc, id)?;
+        let old_tags = content::extract_tags(&old);
+        let new_tags = content::extract_tags(new_body);
+        if !old_tags.is_empty() && new_tags.is_empty() {
+            return Err(StoreError::TagsWouldBeLost { id: id.to_owned(), tags: old_tags });
+        }
         if let Some(s) = content::body_splice(&old, new_body) {
             doc.splice_text(&obj, s.pos, s.del as isize, &s.insert)
                 .map_err(|e| document_err(id, e))?;
         }
         let mut note: NoteDoc = hydrate(&doc).map_err(|e| document_err(id, e))?;
         note.metadata.title = content::derive_title(new_body);
-        note.metadata.tags = content::extract_tags(new_body);
+        note.metadata.tags = new_tags;
         note.metadata.modified_at = now_rfc3339();
         reconcile(&mut doc, &note).map_err(|e| document_err(id, e))?;
         self.persist(id, &mut doc, &note)?;
