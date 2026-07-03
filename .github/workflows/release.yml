@@ -21,6 +21,16 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      # apple/project.yml's PulpEditor SPM dependency is a sibling repo
+      # (path: ../../pulp, per the container layout documented in the
+      # top-level CLAUDE.md) — not part of this checkout, so pull it in
+      # ourselves at the matching relative location.
+      - name: Check out Pulp editor
+        uses: actions/checkout@v4
+        with:
+          repository: tijs/pulp
+          path: ../pulp
+
       - name: Xcode version
         run: xcodebuild -version
 
