@@ -24,12 +24,17 @@ jobs:
       # apple/project.yml's PulpEditor SPM dependency is a sibling repo
       # (path: ../../pulp, per the container layout documented in the
       # top-level CLAUDE.md) — not part of this checkout, so pull it in
-      # ourselves at the matching relative location.
+      # ourselves. actions/checkout refuses a `path` outside $GITHUB_WORKSPACE
+      # ("../pulp" errors as escaping it), so check it out as a subdirectory
+      # instead and symlink it to the sibling location project.yml expects.
       - name: Check out Pulp editor
         uses: actions/checkout@v4
         with:
           repository: tijs/pulp
-          path: ../pulp
+          path: pulp
+
+      - name: Link Pulp editor as a sibling of this checkout
+        run: ln -s "$GITHUB_WORKSPACE/pulp" "$GITHUB_WORKSPACE/../pulp"
 
       - name: Xcode version
         run: xcodebuild -version
