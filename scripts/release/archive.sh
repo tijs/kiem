@@ -87,8 +87,19 @@ else
   timestamp_args+=("$SIGNING_TIMESTAMP")
 fi
 
-# --deep re-signs the embedded kiem CLI binary (Contents/Resources/kiem) too —
-# notarization checks every executable in the bundle, not just the outer app.
+# Sign the embedded kiem CLI explicitly, inside-out, before the outer app.
+# `--deep` on the app *does* re-sign it (right team, right identity) but
+# doesn't reliably carry `--options runtime` down to a loose executable
+# sitting in Resources (as opposed to a nested .app/.framework) — notarization
+# then rejects the whole bundle over just this one binary missing hardened
+# runtime. Apple's own guidance is to sign nested executables explicitly
+# rather than lean on --deep for exactly this reason.
+codesign --force \
+  --options runtime \
+  "${timestamp_args[@]}" \
+  --sign "$SIGNING_IDENTITY" \
+  "$EXPORT_PATH/Kiem.app/Contents/Resources/kiem"
+
 codesign --force --deep \
   --options runtime \
   "${timestamp_args[@]}" \
