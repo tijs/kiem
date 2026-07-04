@@ -44,7 +44,22 @@ pub struct NoteMetadata {
     /// body, if present. Never user-set through a dedicated API — like
     /// `title`/`tags`, it's derived from the body on every write. `None` for
     /// the overwhelming majority of notes, which carry no frontmatter at all.
+    ///
+    /// `missing = "no_status"`: this field didn't exist before this note was
+    /// added, so every Automerge document written before it has no `status`
+    /// key in its metadata map at all — not even an explicit null. Without
+    /// this attribute, autosurgeon's blanket `Hydrate<Option<T>>` impl treats
+    /// a genuinely absent key as an error ("expected a ScalarValue::Null,
+    /// found nothing at all"), not as `None`; only an explicit null (written
+    /// by code that already knows this field) hydrates to `None`. `missing`
+    /// routes through `autosurgeon::hydrate::MaybeMissing<T>`, which does
+    /// treat "key absent" as its own case, and falls back to `no_status()`.
+    #[autosurgeon(missing = "no_status")]
     pub status: Option<String>,
+}
+
+fn no_status() -> Option<String> {
+    None
 }
 
 /// A note as an Automerge document: nested metadata map + text body.
@@ -230,5 +245,59 @@ mod tests {
         let b = NoteDoc::new("x", "did:key:z6MkTest");
         assert_ne!(a.metadata.id, b.metadata.id);
         assert_eq!(a.metadata.id.len(), 36);
+    }
+
+    /// Mirrors `NoteMetadata` exactly as it was before the `status` field
+    /// existed — no `status` key at all in the reconciled map, not even an
+    /// explicit null. Every real Automerge document written before this
+    /// session has this shape.
+    #[derive(Debug, Clone, PartialEq, Eq, Reconcile, Hydrate)]
+    struct OldNoteMetadata {
+        id: String,
+        title: String,
+        tags: Vec<String>,
+        pinned: bool,
+        deleted: bool,
+        created_at: String,
+        modified_at: String,
+        author_did: String,
+        note_type: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
+    struct OldNoteDoc {
+        metadata: OldNoteMetadata,
+        body: autosurgeon::Text,
+    }
+
+    #[test]
+    fn hydrating_a_pre_status_field_document_yields_none_not_an_error() {
+        let old = OldNoteDoc {
+            metadata: OldNoteMetadata {
+                id: "old-1".into(),
+                title: "Before status existed".into(),
+                tags: vec!["errands".into()],
+                pinned: false,
+                deleted: false,
+                created_at: TS.into(),
+                modified_at: TS.into(),
+                author_did: "did:key:z6MkTest".into(),
+                note_type: DEFAULT_NOTE_TYPE.into(),
+            },
+            body: autosurgeon::Text::with_value("Before status existed"),
+        };
+        let mut doc = AutoCommit::new();
+        reconcile(&mut doc, &old).expect("reconcile the pre-status shape");
+        let bytes = doc.save();
+
+        // This is the exact bug: without `#[autosurgeon(missing = "...")]`
+        // on `status`, this used to fail with "document error ... unexpected
+        // nothing at all, expected a ScalarValue::Null" for every note that
+        // predates the field — i.e. every real note a user had before this
+        // release.
+        let loaded = AutoCommit::load(&bytes).expect("load");
+        let hydrated: NoteDoc = hydrate(&loaded).expect("hydrate must not error on a missing status key");
+        assert_eq!(hydrated.metadata.status, None);
+        assert_eq!(hydrated.metadata.title, "Before status existed");
     }
 }
