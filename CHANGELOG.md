@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.7 - 2026-07-04
+
+- Fixed: after quitting and relaunching, a previously-open note could appear selected (title bar, highlighted row) while the editor showed nothing. This is a recurrence of the 0.1.0-alpha.4 fix — that fix didn't actually work, it changed the wrong setting. macOS was still restoring window/selection state on relaunch regardless; the editor just never got told to load the restored note. Window state restoration is now actually disabled.
+
 ## 0.1.0-alpha.6 - 2026-07-04
 
 - Fixed: opening any note created before 0.1.0-alpha.5 crashed with a "Something went wrong / Storage(... document error ... unexpected nothing at all, expected a ScalarValue::Null)" alert. 0.1.0-alpha.5 added a new `status` field to every note's metadata; every note from before that release has no `status` key in its document at all, and Automerge hydration treated that as an error instead of "not set." Fixed at the source — hydrating a note that predates the field now correctly reads as no status, matching every other optional field added over time.
