@@ -1,6 +1,6 @@
 [package]
 name = "kiem-sync"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 edition = "2021"
 description = "Kiem sync transport: iroh-based P2P connections (identity, discovery, relay), feeding kiem-core's SyncEngine."
 

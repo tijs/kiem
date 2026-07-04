@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.6 - 2026-07-04
+
+- Fixed: opening any note created before 0.1.0-alpha.5 crashed with a "Something went wrong / Storage(... document error ... unexpected nothing at all, expected a ScalarValue::Null)" alert. 0.1.0-alpha.5 added a new `status` field to every note's metadata; every note from before that release has no `status` key in its document at all, and Automerge hydration treated that as an error instead of "not set." Fixed at the source — hydrating a note that predates the field now correctly reads as no status, matching every other optional field added over time.
+
 ## 0.1.0-alpha.5 - 2026-07-04
 
 - Fixed: Kiem.app's sidebar and an already-open project view could go stale when the shared store changed on disk outside the app's own actions (e.g. an external `kiem` CLI write) — the list wouldn't update until you navigated away and back. The app now watches the store for external writes and refreshes automatically.
