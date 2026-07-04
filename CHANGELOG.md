@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.5 - 2026-07-04
 
 - Fixed: Kiem.app's sidebar and an already-open project view could go stale when the shared store changed on disk outside the app's own actions (e.g. an external `kiem` CLI write) — the list wouldn't update until you navigated away and back. The app now watches the store for external writes and refreshes automatically.
 - Added: a note's project now shows in a status bar above the editor instead of only as an inline `#proj/<slug>` tag in the body. A note can also carry a `status: active` / `status: completed` frontmatter line (plain markdown, not Kiem-specific); when present, it shows in that same status bar and, in a project's note list, replaces the (redundant) project tag with a status badge. Pulp renders the frontmatter fence itself as a callout instead of plain text between two horizontal rules.
