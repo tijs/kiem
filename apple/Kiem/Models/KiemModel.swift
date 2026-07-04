@@ -27,6 +27,13 @@ final class KiemModel {
     var errorMessage: String?
 
     private var peerManager: PeerManager?
+    /// Watches `kiem.db`/`kiem.db-wal` for writes from outside our own mutation
+    /// calls (an external `kiem` CLI process, or incoming P2P sync). See
+    /// `watchStoreForExternalWrites`.
+    /// `nonisolated(unsafe)`: only ever mutated on the main actor, but `cancel()`
+    /// is thread-safe and needs to run from `deinit`, which is nonisolated.
+    private nonisolated(unsafe) var dbWatchSources: [DispatchSourceFileSystemObject] = []
+    private nonisolated(unsafe) var pendingRefreshTask: Task<Void, Never>?
 
     var selection: SidebarSelection = .allNotes {
         didSet { refreshNotes() }
@@ -86,6 +93,12 @@ final class KiemModel {
         store = try KiemStore.open(dataDir: dataDir.path)
         refresh()
         startSync()
+        watchStoreForExternalWrites(dataDir: dataDir)
+    }
+
+    deinit {
+        for source in dbWatchSources { source.cancel() }
+        pendingRefreshTask?.cancel()
     }
 
     /// Begin P2P sync: discover peers on the local network and converge notes,
@@ -97,6 +110,37 @@ final class KiemModel {
         }
         manager.start()
         peerManager = manager
+    }
+
+    /// Watch the shared SQLite store for writes from outside our own mutation
+    /// calls: an external `kiem` CLI process, or an incoming P2P sync applied by
+    /// `PeerConnection.syncRound()`. Both land in the same on-disk file (WAL
+    /// mode — `crates/kiem-core/src/store.rs`), so one watcher covers both; no
+    /// need to also wire a callback through `PeerConnection`. Debounced so a
+    /// burst of writes triggers one refresh, not one per write — the app's own
+    /// writes harmlessly retrigger a refresh too, which isn't worth special-casing away.
+    private func watchStoreForExternalWrites(dataDir: URL) {
+        let paths = ["kiem.db", "kiem.db-wal"].map { dataDir.appendingPathComponent($0).path }
+        dbWatchSources = paths.compactMap { path in
+            let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else { return nil }
+            let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+            source.setEventHandler { [weak self] in
+                Task { @MainActor in self?.scheduleDebouncedRefresh() }
+            }
+            source.setCancelHandler { close(fd) }
+            source.resume()
+            return source
+        }
+    }
+
+    private func scheduleDebouncedRefresh() {
+        pendingRefreshTask?.cancel()
+        pendingRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            self?.refresh()
+        }
     }
 
     /// Stable peer id for this install. `KIEM_PEER_ID` overrides it so several
