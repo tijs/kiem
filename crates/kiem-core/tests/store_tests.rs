@@ -30,6 +30,24 @@ fn create_then_get_roundtrips_all_fields() {
 }
 
 #[test]
+fn create_with_frontmatter_status_roundtrips_through_a_real_insert() {
+    // Exercises the actual INSERT statement's column/param binding for
+    // `status`, not just the migration test's hand-written SQL.
+    let mut store = NoteStore::open_in_memory().unwrap();
+    let body = "---\nstatus: active\n---\n# Plan\n\nbody #proj/x";
+    let meta = store.create_note(body, DID).unwrap();
+    assert_eq!(meta.status, Some("active".to_string()));
+    assert_eq!(meta.title, "Plan");
+
+    let loaded = store.get_note(&meta.id).unwrap().expect("note exists");
+    assert_eq!(loaded.metadata.status, Some("active".to_string()));
+    // The denormalized SQLite column agrees with the Automerge doc — list
+    // queries read the column directly, never hydrate the doc.
+    let listed = store.list_notes().unwrap();
+    assert_eq!(listed[0].status, Some("active".to_string()));
+}
+
+#[test]
 fn get_unknown_id_returns_none() {
     let store = store_with(&[]);
     assert!(store.get_note("nope").unwrap().is_none());
@@ -81,6 +99,26 @@ fn update_rederives_metadata_and_preserves_created_at() {
     let loaded = store.get_note("a").unwrap().unwrap();
     assert_eq!(loaded.body.as_str(), "# After\n\n- [ ] task #later");
     assert_eq!(store.list_todos().unwrap().len(), 1);
+}
+
+#[test]
+fn update_rederives_status_on_edit() {
+    // Coverage gap: status was only ever exercised at creation time before
+    // this test — verify it re-derives on an edit through the real update
+    // path (write_body), in both directions (add, then remove).
+    let mut store = store_with(&[note("a", "# Before", "2026-06-10T10:00:00Z")]);
+    assert_eq!(store.get_note("a").unwrap().unwrap().metadata.status, None);
+
+    let meta = store.update_note("a", "---\nstatus: active\n---\n# After #tag").unwrap();
+    assert_eq!(meta.status, Some("active".to_string()));
+
+    let meta = store.update_note("a", "---\nstatus: completed\n---\n# After #tag").unwrap();
+    assert_eq!(meta.status, Some("completed".to_string()));
+
+    // Removing the frontmatter clears status back to None.
+    let meta = store.update_note("a", "# After #tag").unwrap();
+    assert_eq!(meta.status, None);
+    assert_eq!(store.get_note("a").unwrap().unwrap().metadata.status, None);
 }
 
 #[test]
@@ -247,6 +285,49 @@ fn persists_across_open_close() {
     assert_eq!(loaded.body.as_str(), "# Durable\n\nkept #keep");
     // the search index persisted too — no reindex needed after reopen
     assert_eq!(store.search("kept", 10).unwrap()[0].note_id, id);
+}
+
+#[test]
+fn opening_a_pre_status_column_database_migrates_it_idempotently() {
+    // Simulate an on-disk `kiem.db` from before the `status` column existed:
+    // hand-write the old schema (no `status`) and one row, bypassing NoteStore.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("kiem.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id          TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                tags        TEXT NOT NULL,
+                author_did  TEXT NOT NULL,
+                note_type   TEXT NOT NULL,
+                pinned      INTEGER NOT NULL,
+                deleted     INTEGER NOT NULL,
+                has_todos   INTEGER NOT NULL,
+                created_at  TEXT NOT NULL,
+                modified_at TEXT NOT NULL,
+                doc         BLOB NOT NULL
+            );
+            INSERT INTO notes (id, title, tags, author_did, note_type, pinned, deleted,
+                has_todos, created_at, modified_at, doc)
+            VALUES ('old-1', 'Old note', '[]', 'did:key:z6MkTest', 'note', 0, 0, 0,
+                '2026-06-01T00:00:00Z', '2026-06-01T00:00:00Z', x'00');",
+        )
+        .unwrap();
+    }
+
+    // Opening with the current code must migrate the column, not error.
+    let store = NoteStore::open(&db_path).unwrap();
+    let notes = store.list_notes().unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].status, None);
+
+    // Reopening again must be a no-op (idempotent guard), not a second failed
+    // `ALTER TABLE ADD COLUMN` on an already-migrated database.
+    drop(store);
+    let store = NoteStore::open(&db_path).unwrap();
+    assert_eq!(store.list_notes().unwrap().len(), 1);
 }
 
 #[test]

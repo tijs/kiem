@@ -82,12 +82,13 @@ CREATE TABLE IF NOT EXISTS notes (
     has_todos   INTEGER NOT NULL,
     created_at  TEXT NOT NULL,
     modified_at TEXT NOT NULL,
+    status      TEXT,
     doc         BLOB NOT NULL
 );
 ";
 
 const META_COLUMNS: &str =
-    "id, title, tags, author_did, note_type, pinned, deleted, created_at, modified_at";
+    "id, title, tags, author_did, note_type, pinned, deleted, created_at, modified_at, status";
 
 impl NoteStore {
     /// Open (or create) the full data directory: `kiem.db` plus the `search/`
@@ -139,6 +140,7 @@ impl NoteStore {
 
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.execute_batch(SCHEMA)?;
+        ensure_status_column(&conn)?;
         Ok(NoteStore { conn, search: None })
     }
 
@@ -203,8 +205,8 @@ impl NoteStore {
         let m = &note.metadata;
         let inserted = self.conn.execute(
             "INSERT OR IGNORE INTO notes
-             (id, title, tags, author_did, note_type, pinned, deleted, has_todos, created_at, modified_at, doc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, title, tags, author_did, note_type, pinned, deleted, has_todos, created_at, modified_at, status, doc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 m.id,
                 m.title,
@@ -216,6 +218,7 @@ impl NoteStore {
                 content::has_unchecked_todos(note.body.as_str()),
                 m.created_at,
                 m.modified_at,
+                m.status,
                 doc.save(),
             ],
         )?;
@@ -511,8 +514,10 @@ impl NoteStore {
             .load_doc(id)?
             .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
         let (obj, old) = body_obj(&doc, id)?;
-        let old_tags = content::extract_tags(&old);
-        let new_tags = content::extract_tags(new_body);
+        let (_, old_rest) = content::parse_frontmatter_status(&old);
+        let old_tags = content::extract_tags(old_rest);
+        let (status, new_rest) = content::parse_frontmatter_status(new_body);
+        let new_tags = content::extract_tags(new_rest);
         if !old_tags.is_empty() && new_tags.is_empty() {
             return Err(StoreError::TagsWouldBeLost { id: id.to_owned(), tags: old_tags });
         }
@@ -521,8 +526,9 @@ impl NoteStore {
                 .map_err(|e| document_err(id, e))?;
         }
         let mut note: NoteDoc = hydrate(&doc).map_err(|e| document_err(id, e))?;
-        note.metadata.title = content::derive_title(new_body);
+        note.metadata.title = content::derive_title(new_rest);
         note.metadata.tags = new_tags;
+        note.metadata.status = status;
         note.metadata.modified_at = now_rfc3339();
         reconcile(&mut doc, &note).map_err(|e| document_err(id, e))?;
         self.persist(id, &mut doc, &note)?;
@@ -536,7 +542,7 @@ impl NoteStore {
         let m = &note.metadata;
         self.conn.execute(
             "UPDATE notes SET title = ?2, tags = ?3, pinned = ?4, deleted = ?5,
-             has_todos = ?6, modified_at = ?7, note_type = ?8, doc = ?9 WHERE id = ?1",
+             has_todos = ?6, modified_at = ?7, note_type = ?8, status = ?9, doc = ?10 WHERE id = ?1",
             params![
                 m.id,
                 m.title,
@@ -546,6 +552,7 @@ impl NoteStore {
                 content::has_unchecked_todos(note.body.as_str()),
                 m.modified_at,
                 m.note_type,
+                m.status,
                 doc.save(),
             ],
         )?;
@@ -592,7 +599,25 @@ fn row_to_meta(row: &Row<'_>) -> rusqlite::Result<NoteMetadata> {
         deleted: row.get("deleted")?,
         created_at: row.get("created_at")?,
         modified_at: row.get("modified_at")?,
+        status: row.get("status")?,
     })
+}
+
+/// Add the `status` column to a pre-existing `notes` table that predates it.
+/// `CREATE TABLE IF NOT EXISTS` is a no-op against an already-existing table
+/// with a different column set, so a fresh install gets `status` straight from
+/// [`SCHEMA`] but an existing on-disk database needs this guarded migration —
+/// the first one this store has ever needed (see the data dir's own
+/// whole-directory backup in `data_version.rs`, which is deliberately blunt
+/// rather than schema-aware).
+fn ensure_status_column(conn: &Connection) -> rusqlite::Result<()> {
+    let has_status: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('notes') WHERE name = 'status'")?
+        .exists([])?;
+    if !has_status {
+        conn.execute("ALTER TABLE notes ADD COLUMN status TEXT", [])?;
+    }
+    Ok(())
 }
 
 fn tags_json(tags: &[String]) -> String {

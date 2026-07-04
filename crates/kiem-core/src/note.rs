@@ -40,6 +40,11 @@ pub struct NoteMetadata {
     pub modified_at: String,
     pub author_did: String,
     pub note_type: String,
+    /// Read from a leading `---\nstatus: <value>\n---` frontmatter fence in the
+    /// body, if present. Never user-set through a dedicated API — like
+    /// `title`/`tags`, it's derived from the body on every write. `None` for
+    /// the overwhelming majority of notes, which carry no frontmatter at all.
+    pub status: Option<String>,
 }
 
 /// A note as an Automerge document: nested metadata map + text body.
@@ -58,17 +63,19 @@ impl NoteDoc {
     /// Create a note with explicit id and timestamp (deterministic seam for
     /// tests and for stores that batch-assign timestamps).
     pub fn new_with(id: String, body: &str, author_did: &str, timestamp: String) -> Self {
+        let (status, rest) = crate::content::parse_frontmatter_status(body);
         NoteDoc {
             metadata: NoteMetadata {
                 id,
-                title: crate::content::derive_title(body),
-                tags: crate::content::extract_tags(body),
+                title: crate::content::derive_title(rest),
+                tags: crate::content::extract_tags(rest),
                 pinned: false,
                 deleted: false,
                 created_at: timestamp.clone(),
                 modified_at: timestamp,
                 author_did: author_did.to_owned(),
                 note_type: DEFAULT_NOTE_TYPE.to_owned(),
+                status,
             },
             body: Text::with_value(body),
         }
@@ -84,8 +91,10 @@ impl NoteDoc {
     /// [`update_body`](Self::update_body) with an explicit timestamp.
     pub fn update_body_at(&mut self, body: &str, timestamp: String) {
         self.body.update(body);
-        self.metadata.title = crate::content::derive_title(body);
-        self.metadata.tags = crate::content::extract_tags(body);
+        let (status, rest) = crate::content::parse_frontmatter_status(body);
+        self.metadata.title = crate::content::derive_title(rest);
+        self.metadata.tags = crate::content::extract_tags(rest);
+        self.metadata.status = status;
         self.metadata.modified_at = timestamp;
     }
 

@@ -56,6 +56,9 @@ pub struct NoteMetadata {
     pub modified_at: String,
     pub author_did: String,
     pub note_type: String,
+    /// From a leading `---\nstatus: <value>\n---` frontmatter fence in the
+    /// body, if present. `None` for the overwhelming majority of notes.
+    pub status: Option<String>,
 }
 
 impl From<kiem_core::note::NoteMetadata> for NoteMetadata {
@@ -70,6 +73,7 @@ impl From<kiem_core::note::NoteMetadata> for NoteMetadata {
             modified_at: m.modified_at,
             author_did: m.author_did,
             note_type: m.note_type,
+            status: m.status,
         }
     }
 }

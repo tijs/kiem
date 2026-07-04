@@ -1,5 +1,6 @@
 import SwiftUI
 import Pulp
+import KiemKit
 
 /// The Pulp inline-Markdown editor over the selected note.
 ///
@@ -36,6 +37,42 @@ struct EditorView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.bottom, 14)
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if let note = model.selectedNote {
+                        MetadataStrip(note: note)
+                    }
+                }
+        }
+    }
+}
+
+/// Reserved-tag (`proj/<slug>`) and, when present, frontmatter-status summary
+/// for the open note — additive chrome, not a change to how Pulp renders the
+/// body (see the reserved-tag brainstorm: hiding the tag from the rendered
+/// body itself would need real TextKit-level work, out of scope here).
+private struct MetadataStrip: View {
+    let note: NoteMetadata
+
+    private var projectTags: [String] {
+        note.tags.filter { $0.hasPrefix(KiemModel.projectTagPrefix) }
+    }
+
+    var body: some View {
+        if !projectTags.isEmpty || note.status != nil {
+            HStack(spacing: 8) {
+                ForEach(projectTags, id: \.self) { tag in
+                    Label(KiemModel.projectName(tag), systemImage: "folder")
+                }
+                if let status = note.status {
+                    StatusBadge(status: status)
+                }
+                Spacer()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.thinMaterial)
         }
     }
 }

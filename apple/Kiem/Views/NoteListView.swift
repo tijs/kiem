@@ -82,7 +82,11 @@ struct NoteListView: View {
 
     @ViewBuilder
     private func noteRow(_ note: NoteMetadata) -> some View {
-        NoteRow(note: note)
+        // A project's own note list already implies the project — the tag
+        // there is duplicate info, so show status (the more useful
+        // at-a-glance signal for a plan) in its place when present. Other
+        // views (All Notes, tag filters, smart filters) keep showing tags.
+        NoteRow(note: note, showStatusInsteadOfTags: model.isViewingProject)
             .tag(note.id)
             .contextMenu {
                 if model.isViewingTrash {
@@ -121,6 +125,7 @@ private struct ProjectTodoRow: View {
 
 private struct NoteRow: View {
     let note: NoteMetadata
+    let showStatusInsteadOfTags: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -130,9 +135,13 @@ private struct NoteRow: View {
             HStack(spacing: 6) {
                 Text(Self.dateText(note.modifiedAt))
                     .foregroundStyle(.secondary)
-                ForEach(note.tags, id: \.self) { tag in
-                    Text("#\(tag)")
-                        .foregroundStyle(.tint)
+                if showStatusInsteadOfTags, let status = note.status {
+                    StatusBadge(status: status)
+                } else {
+                    ForEach(note.tags, id: \.self) { tag in
+                        Text("#\(tag)")
+                            .foregroundStyle(.tint)
+                    }
                 }
             }
             .font(.caption)
@@ -146,6 +155,22 @@ private struct NoteRow: View {
             return rfc3339
         }
         return date.formatted(.relative(presentation: .named))
+    }
+}
+
+/// A small status label ("active"/"completed"/whatever the frontmatter says),
+/// styled as a subtle capsule so it doesn't compete visually with the title.
+/// Shared between the sidebar row and `EditorView`'s metadata strip.
+struct StatusBadge: View {
+    let status: String
+
+    var body: some View {
+        Text(status)
+            .font(.caption2.weight(.medium))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.tint.opacity(0.15), in: Capsule())
+            .foregroundStyle(.tint)
     }
 }
 

@@ -264,5 +264,53 @@
     "title": "Title here",
     "tags": [],
     "hasUncheckedTodos": false
+  },
+  {
+    "name": "frontmatter_status_active_title_and_tags_unaffected",
+    "input": "---\nstatus: active\n---\n# Plan title\nbody #proj/kiem_app",
+    "title": "Plan title",
+    "tags": ["proj/kiem_app"],
+    "hasUncheckedTodos": false,
+    "status": "active"
+  },
+  {
+    "name": "frontmatter_status_completed",
+    "input": "---\nstatus: completed\n---\n# Done plan\nfinished",
+    "title": "Done plan",
+    "tags": [],
+    "hasUncheckedTodos": false,
+    "status": "completed"
+  },
+  {
+    "name": "frontmatter_present_without_status_key",
+    "input": "---\ntitle: spec\ntype: doc\n---\n# Real title\nbody",
+    "title": "Real title",
+    "tags": [],
+    "hasUncheckedTodos": false,
+    "status": null
+  },
+  {
+    "name": "unterminated_frontmatter_fence_falls_back_to_raw_body",
+    "input": "---\nstatus: active\nno closing fence\nMore text #tag",
+    "title": "status: active",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false,
+    "status": null
+  },
+  {
+    "name": "frontmatter_status_survives_crlf",
+    "input": "---\r\nstatus: active\r\n---\r\n# Plan title\r\nbody #tag",
+    "title": "Plan title",
+    "tags": ["tag"],
+    "hasUncheckedTodos": false,
+    "status": "active"
+  },
+  {
+    "name": "frontmatter_multiple_status_lines_last_one_wins",
+    "input": "---\nstatus: draft\nstatus: active\n---\n# Multi\nbody",
+    "title": "Multi",
+    "tags": [],
+    "hasUncheckedTodos": false,
+    "status": "active"
   }
 ]

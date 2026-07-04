@@ -95,6 +95,43 @@ pub fn extract_tags(body: &str) -> Vec<String> {
     tags
 }
 
+/// Parse an optional leading frontmatter fence (`---` / `status: <value>` /
+/// `---`) from the very start of `body`. Returns the extracted status (the
+/// last `status:` line inside the fence, if any, trimmed) and the body with
+/// the fence itself removed — so `derive_title`/`extract_tags` run on the
+/// note's real content instead of tripping over the fence (today a leading
+/// `---` would otherwise become the derived title). Absent, unterminated, or
+/// status-less frontmatter returns `(None, body)` unchanged. Deliberately
+/// narrow — not general YAML — it only recognizes a `status:` key line and
+/// ignores any other frontmatter content.
+pub fn parse_frontmatter_status(body: &str) -> (Option<String>, &str) {
+    let mut lines = body.split_inclusive('\n');
+    let Some(first) = lines.next() else { return (None, body) };
+    if line_content(first) != "---" {
+        return (None, body);
+    }
+
+    let mut offset = first.len();
+    let mut status = None;
+    for line in lines {
+        offset += line.len();
+        let content = line_content(line);
+        if content == "---" {
+            return (status, &body[offset..]);
+        }
+        if let Some(value) = content.strip_prefix("status:") {
+            status = Some(trim_horizontal_ws(value).to_string());
+        }
+    }
+    (None, body) // unterminated fence: treat as if there were none
+}
+
+/// A line's content without its trailing `\n`/`\r\n` terminator.
+fn line_content(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
 /// Whether the body contains at least one unchecked task item (`- [ ]`).
 pub fn has_unchecked_todos(body: &str) -> bool {
     // Anchored to the same rule as `extract_todo_items` — a checkbox at line
@@ -454,6 +491,39 @@ mod tests {
     #[test]
     fn mismatched_fence_chars_do_not_pair() {
         assert_eq!(extract_tags("p\n```\nx #a\n~~~\ny #b"), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn frontmatter_status_extracted_and_fence_stripped() {
+        let (status, rest) = parse_frontmatter_status("---\nstatus: active\n---\n# Plan\nbody");
+        assert_eq!(status, Some("active".to_string()));
+        assert_eq!(rest, "# Plan\nbody");
+    }
+
+    #[test]
+    fn frontmatter_without_status_key_yields_none() {
+        let (status, rest) = parse_frontmatter_status("---\ntitle: spec\n---\nbody");
+        assert_eq!(status, None);
+        assert_eq!(rest, "body");
+    }
+
+    #[test]
+    fn unterminated_frontmatter_fence_yields_none_and_original_body() {
+        let body = "---\nstatus: active\nno closing fence";
+        assert_eq!(parse_frontmatter_status(body), (None, body));
+    }
+
+    #[test]
+    fn no_frontmatter_fence_yields_none_and_original_body() {
+        let body = "# Just a note\nno fence here";
+        assert_eq!(parse_frontmatter_status(body), (None, body));
+    }
+
+    #[test]
+    fn frontmatter_status_survives_crlf() {
+        let (status, rest) = parse_frontmatter_status("---\r\nstatus: completed\r\n---\r\nbody");
+        assert_eq!(status, Some("completed".to_string()));
+        assert_eq!(rest, "body");
     }
 
     #[test]

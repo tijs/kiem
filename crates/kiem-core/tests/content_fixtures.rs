@@ -16,6 +16,8 @@ struct ContentFixture {
     title: String,
     tags: Vec<String>,
     has_unchecked_todos: bool,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 fn workspace_root() -> PathBuf {
@@ -42,14 +44,16 @@ fn derivation_matches_shared_contract() {
     assert!(!fixtures.is_empty(), "fixture set must not be empty");
 
     for f in &fixtures {
+        let (status, rest) = kiem_core::content::parse_frontmatter_status(&f.input);
+        assert_eq!(status, f.status, "status mismatch for fixture `{}`", f.name);
         assert_eq!(
-            kiem_core::content::derive_title(&f.input),
+            kiem_core::content::derive_title(rest),
             f.title,
             "title mismatch for fixture `{}`",
             f.name
         );
         assert_eq!(
-            kiem_core::content::extract_tags(&f.input),
+            kiem_core::content::extract_tags(rest),
             f.tags,
             "tags mismatch for fixture `{}`",
             f.name
