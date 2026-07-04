@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.0-alpha.8 - 2026-07-04
+
+- Fixed: the previous release's window-restoration fix had a gap — File > New Window (⌘N) could still open a second, unprotected window that macOS would restore on relaunch, reintroducing the same blank-editor bug through a different path. Kiem is a single-window app; that menu command is now removed.
+
 ## 0.1.0-alpha.7 - 2026-07-04
 
 - Fixed: after quitting and relaunching, a previously-open note could appear selected (title bar, highlighted row) while the editor showed nothing. This is a recurrence of the 0.1.0-alpha.4 fix — that fix didn't actually work, it changed the wrong setting. macOS was still restoring window/selection state on relaunch regardless; the editor just never got told to load the restored note. Window state restoration is now actually disabled.
