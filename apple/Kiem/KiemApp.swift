@@ -35,6 +35,12 @@ struct KiemApp: App {
             }
         }
         .commands {
+            // Kiem is a single-window app (see AppDelegate.swift): the stock
+            // File > New Window command would open a second NSWindow that
+            // defaults to `isRestorable = true`, un-protected by
+            // AppDelegate's launch-time-only fix and able to reintroduce the
+            // window-restoration bug that fix closed.
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .appInfo) {
                 Button("Install Command Line Tool…") {
                     cliInstallMessage = CLIInstaller.install()
