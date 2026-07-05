@@ -9,14 +9,17 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } content: {
             NoteListView(model: model)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 300)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 340)
         } detail: {
             EditorView(model: model)
         }
-        .navigationTitle(model.selectedNote?.title ?? "Kiem")
+        // Static app name, not the selected note's title — the title is already
+        // the H1 at the top of the editor and in the note-list row, so showing it
+        // again in the window title bar is redundant chrome.
+        .navigationTitle("Kiem")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("New Project", systemImage: "folder.badge.plus") {

@@ -1,5 +1,5 @@
-import SwiftUI
 import KiemKit
+import SwiftUI
 
 struct NoteListView: View {
     @Bindable var model: KiemModel
@@ -80,7 +80,6 @@ struct NoteListView: View {
         return sections
     }
 
-    @ViewBuilder
     private func noteRow(_ note: NoteMetadata) -> some View {
         // A project's own note list already implies the project — the tag
         // there is duplicate info, so show status (the more useful
@@ -105,7 +104,9 @@ struct NoteListView: View {
 private struct NoteSection: Identifiable {
     let title: String
     let notes: [NoteMetadata]
-    var id: String { title }
+    var id: String {
+        title
+    }
 }
 
 /// An open project todo, rendered as a tappable row that completes it.
@@ -131,14 +132,18 @@ private struct NoteRow: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(note.title.isEmpty ? "Untitled" : note.title)
                 .font(.headline)
-                .lineLimit(1)
+                .lineLimit(2)
             HStack(spacing: 6) {
                 Text(Self.dateText(note.modifiedAt))
                     .foregroundStyle(.secondary)
                 if showStatusInsteadOfTags, let status = note.status {
                     StatusBadge(status: status)
                 } else {
-                    ForEach(note.tags, id: \.self) { tag in
+                    // Hide reserved `proj/...` tags — they're structural, not
+                    // user labels, and repeating them on every row is visual
+                    // noise. The open note's project shows in the editor's
+                    // metadata strip instead.
+                    ForEach(note.tags.filter { !$0.hasPrefix(KiemModel.projectTagPrefix) }, id: \.self) { tag in
                         Text("#\(tag)")
                             .foregroundStyle(.tint)
                     }
@@ -147,7 +152,7 @@ private struct NoteRow: View {
             .font(.caption)
             .lineLimit(1)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
     private static func dateText(_ rfc3339: String) -> String {

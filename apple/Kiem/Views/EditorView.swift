@@ -1,6 +1,6 @@
-import SwiftUI
-import Pulp
 import KiemKit
+import Pulp
+import SwiftUI
 
 /// The Pulp inline-Markdown editor over the selected note.
 ///
@@ -58,21 +58,22 @@ private struct MetadataStrip: View {
     }
 
     var body: some View {
-        if !projectTags.isEmpty || note.status != nil {
-            HStack(spacing: 8) {
+        // Project breadcrumb only. Status is rendered by Pulp's frontmatter
+        // callout in the document, so showing it here too double-displays it.
+        // Quiet inline row — no bar background, so it reads as a breadcrumb,
+        // not chrome competing with the toolbar or the document.
+        if !projectTags.isEmpty {
+            HStack(spacing: 5) {
                 ForEach(projectTags, id: \.self) { tag in
                     Label(KiemModel.projectName(tag), systemImage: "folder")
-                }
-                if let status = note.status {
-                    StatusBadge(status: status)
                 }
                 Spacer()
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.thinMaterial)
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
         }
     }
 }

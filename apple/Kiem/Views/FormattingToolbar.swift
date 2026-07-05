@@ -40,8 +40,8 @@ struct FormattingToolbar: View {
                         .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
                 )
                 // Layered, transparent shadows read as depth on any background.
-                .shadow(color: .black.opacity(0.14), radius: 9, y: 4)
-                .shadow(color: .black.opacity(0.06), radius: 2, y: 1)
+                // One soft shadow reads as a gentle lift, not a heavy slab.
+                .shadow(color: .black.opacity(0.10), radius: 5, y: 2)
         }
     }
 

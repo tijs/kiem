@@ -29,3 +29,6 @@ xcuserdata/
 # Packaged release artifacts (built locally, uploaded to GitHub Releases)
 /dist/
 /build/
+
+# pi agent/subagent artifacts (local session state, not versioned)
+.pi-subagents/
