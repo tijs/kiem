@@ -85,7 +85,8 @@ struct KiemApp: App {
         // in place — otherwise removing it would leave no `kiem` on PATH.
         if cliInstalled,
            !UserDefaults.standard.bool(forKey: Self.cliShadowDismissedKey),
-           let shadow = CLIInstaller.shadowingBinary() {
+           let shadow = CLIInstaller.shadowingBinary()
+        {
             cliShadowPath = shadow
         }
     }

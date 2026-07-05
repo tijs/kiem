@@ -37,7 +37,8 @@ enum CLIInstaller {
               FileManager.default.isExecutableFile(atPath: source.path) else { return false }
         let fm = FileManager.default
         if let target = try? fm.destinationOfSymbolicLink(atPath: destination),
-           target == source.path {
+           target == source.path
+        {
             return true
         }
         let dir = (destination as NSString).deletingLastPathComponent
@@ -61,7 +62,8 @@ enum CLIInstaller {
         let cargo = NSHomeDirectory() + "/.cargo/bin/kiem"
         guard FileManager.default.isExecutableFile(atPath: cargo) else { return nil }
         if let target = try? FileManager.default.destinationOfSymbolicLink(atPath: cargo),
-           target == source.path {
+           target == source.path
+        {
             return nil
         }
         return cargo
