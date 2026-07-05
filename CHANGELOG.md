@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.9 - 2026-07-05
+
+- Fixed: the editor pane could go blank (no data loss) when a store refresh raced a sync or external write — a transient DB read failure emptied the note list and spuriously cleared the selection. A failed refresh now leaves the list and selection untouched.
+- Added: the `kiem` CLI now auto-maintains a symlink to the bundled binary on app launch (the VS Code `code` model), so it tracks the installed app version with no user interaction after the one-time install. A shadowing `cargo install`-ed `~/.cargo/bin/kiem` is detected and flagged for removal.
+- Polish: tightened the sidebar/editor chrome — static app name in the window title bar (was duplicating the note's H1), reserved `proj/*` tags hidden from note-list rows, rebalanced column widths, a lighter formatting toolbar, 2-line note titles, and a quieter project breadcrumb above the editor.
+
 ## 0.1.0-alpha.8 - 2026-07-04
 
 - Fixed: the previous release's window-restoration fix had a gap — File > New Window (⌘N) could still open a second, unprotected window that macOS would restore on relaunch, reintroducing the same blank-editor bug through a different path. Kiem is a single-window app; that menu command is now removed.
