@@ -97,7 +97,9 @@ final class KiemModel {
     }
 
     deinit {
-        for source in dbWatchSources { source.cancel() }
+        for source in dbWatchSources {
+            source.cancel()
+        }
         pendingRefreshTask?.cancel()
     }
 
@@ -176,8 +178,12 @@ final class KiemModel {
         let listed: [NoteMetadata]? = searchText.isEmpty
             ? report { try notes(for: selection) }
             : report { try searchResults(matching: searchText) }
-        notes = listed ?? []
-        if let selected = selectedNoteID, !notes.contains(where: { $0.id == selected }) {
+        // A failed query (listed == nil) leaves notes + selection untouched —
+        // clearing on a transient DB error (e.g. SQLITE_BUSY racing a sync write)
+        // blanks the editor even though the note is intact in the store.
+        guard let listed else { return }
+        notes = listed
+        if let selected = selectedNoteID, !listed.contains(where: { $0.id == selected }) {
             selectedNoteID = nil
         }
         refreshProjectTodos()
@@ -207,7 +213,7 @@ final class KiemModel {
     /// rank order preserved. Trashed hits drop out — they're not in `listNotes`.
     private func searchResults(matching query: String) throws -> [NoteMetadata] {
         let hits = try store.search(query: query, limit: 50)
-        let byID = Dictionary(uniqueKeysWithValues: try store.listNotes().map { ($0.id, $0) })
+        let byID = try Dictionary(uniqueKeysWithValues: store.listNotes().map { ($0.id, $0) })
         return hits.compactMap { byID[$0.noteId] }
     }
 
@@ -264,12 +270,12 @@ final class KiemModel {
             // Mirror Rust's `to_ascii_lowercase`: only A–Z fold; everything else
             // is left as-is and then dropped if non-ASCII.
             let c: Character
-            if let a = ch.asciiValue, (65...90).contains(a) {
+            if let a = ch.asciiValue, (65 ... 90).contains(a) {
                 c = Character(UnicodeScalar(a + 32))
             } else {
                 c = ch
             }
-            if let a = c.asciiValue, (97...122).contains(a) || (48...57).contains(a) || c == "/" {
+            if let a = c.asciiValue, (97 ... 122).contains(a) || (48 ... 57).contains(a) || c == "/" {
                 slug.append(c)
                 prevSep = false
             } else if c == " " || c == "-" || c == "_" {
@@ -279,7 +285,9 @@ final class KiemModel {
                 }
             }
         }
-        while slug.hasSuffix("_") { slug.removeLast() }
+        while slug.hasSuffix("_") {
+            slug.removeLast()
+        }
         return slug.isEmpty ? "" : projectTagPrefix + slug
     }
 
