@@ -25,6 +25,53 @@ enum CLIInstaller {
         return linkWithAdmin(from: source.path, to: destination)
     }
 
+    /// Silently ensure the PATH symlink points at the bundled CLI. Idempotent:
+    /// a no-op when the symlink already resolves to the bundled binary. Never
+    /// prompts for admin auth — if `/usr/local/bin` isn't writable this quietly
+    /// fails (the user can still install via the menu item, which does prompt).
+    /// Called on app launch so the CLI tracks the installed app version with no
+    /// user interaction.
+    @discardableResult
+    static func ensureInstalled() -> Bool {
+        guard let source = bundledBinary,
+              FileManager.default.isExecutableFile(atPath: source.path) else { return false }
+        let fm = FileManager.default
+        if let target = try? fm.destinationOfSymbolicLink(atPath: destination),
+           target == source.path {
+            return true
+        }
+        let dir = (destination as NSString).deletingLastPathComponent
+        guard fm.fileExists(atPath: dir) ? fm.isWritableFile(atPath: dir) : parentIsWritable(dir) else {
+            return false
+        }
+        do {
+            try replaceExisting(at: destination)
+            try fm.createSymbolicLink(atPath: destination, withDestinationPath: source.path)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// A `kiem` on PATH that isn't the bundled CLI — the common case is a
+    /// `cargo install`-ed `~/.cargo/bin/kiem`, which shadows `/usr/local/bin/kiem`
+    /// and won't auto-update with the app. Returns its path if present, else nil.
+    static func shadowingBinary() -> String? {
+        guard let source = bundledBinary else { return nil }
+        let cargo = NSHomeDirectory() + "/.cargo/bin/kiem"
+        guard FileManager.default.isExecutableFile(atPath: cargo) else { return nil }
+        if let target = try? FileManager.default.destinationOfSymbolicLink(atPath: cargo),
+           target == source.path {
+            return nil
+        }
+        return cargo
+    }
+
+    /// Remove a shadowing CLI the user opted to clear (after consent via alert).
+    static func removeShadowing(at path: String) {
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
     // MARK: - Internals
 
     /// Attempt the symlink without elevation; succeeds when the target directory
