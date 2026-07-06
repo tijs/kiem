@@ -104,6 +104,28 @@ pub struct TagCount {
     pub count: u64,
 }
 
+/// Sidebar smart-filter match counts, computed in one table scan.
+#[derive(Debug, uniffi::Record)]
+pub struct FilterCounts {
+    pub todo: u64,
+    pub today: u64,
+    pub untagged: u64,
+    pub pinned: u64,
+    pub trash: u64,
+}
+
+impl From<kiem_core::store::FilterCounts> for FilterCounts {
+    fn from(c: kiem_core::store::FilterCounts) -> Self {
+        FilterCounts {
+            todo: c.todo,
+            today: c.today,
+            untagged: c.untagged,
+            pinned: c.pinned,
+            trash: c.trash,
+        }
+    }
+}
+
 #[derive(Debug, uniffi::Record)]
 pub struct ProjectTodo {
     pub note_id: String,
@@ -239,6 +261,11 @@ impl KiemStore {
 
     pub fn list_deleted(&self) -> Result<Vec<NoteMetadata>, KiemError> {
         self.with(|store, _| Ok(into_meta(store.list_deleted()?)))
+    }
+
+    /// Smart-filter match counts for the sidebar (one scan, no lists).
+    pub fn filter_counts(&self) -> Result<FilterCounts, KiemError> {
+        self.with(|store, _| Ok(store.filter_counts()?.into()))
     }
 
     pub fn get_tags(&self) -> Result<Vec<TagCount>, KiemError> {

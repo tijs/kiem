@@ -257,8 +257,14 @@ final class KiemModel {
         let allTags = report { try store.getTags() } ?? []
         projects = allTags.filter { $0.tag.hasPrefix(Self.projectTagPrefix) }
         tags = allTags.filter { !$0.tag.hasPrefix(Self.projectTagPrefix) }
-        filterCounts = SmartFilter.allCases.reduce(into: [:]) { counts, filter in
-            counts[filter] = report { try notes(for: .filter(filter)).count } ?? 0
+        if let counts = report({ try store.filterCounts() }) {
+            filterCounts = [
+                .todo: Int(counts.todo),
+                .today: Int(counts.today),
+                .untagged: Int(counts.untagged),
+                .pinned: Int(counts.pinned),
+                .trash: Int(counts.trash),
+            ]
         }
     }
 

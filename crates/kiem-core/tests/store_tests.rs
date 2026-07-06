@@ -494,3 +494,29 @@ fn set_note_type_reclassifies_and_persists_to_the_column() {
     store.set_note_type("a", "").unwrap();
     assert_eq!(store.get_note("a").unwrap().unwrap().metadata.note_type, "note");
 }
+
+#[test]
+fn filter_counts_match_the_list_queries() {
+    let mut store = NoteStore::open_in_memory().unwrap();
+    store.create_note("# Todo note\n\n- [ ] open item #x", DID).unwrap(); // todo + today + tagged
+    store.create_note("# Untagged, modified today", DID).unwrap();
+    let pinned = store.create_note("# Pinned #x", DID).unwrap();
+    store.set_pinned(&pinned.id, true).unwrap();
+    let dead = store.create_note("# Trashed", DID).unwrap();
+    store.delete_note(&dead.id).unwrap();
+    // A yesterday-dated note: today must not count it.
+    store
+        .insert_note(&note("old", "# Old", "2026-06-28T10:00:00Z"))
+        .unwrap();
+
+    let counts = store.filter_counts().unwrap();
+    assert_eq!(counts.todo as usize, store.list_todos().unwrap().len());
+    assert_eq!(counts.today as usize, store.list_today().unwrap().len());
+    assert_eq!(counts.untagged as usize, store.list_untagged().unwrap().len());
+    assert_eq!(counts.pinned as usize, store.list_pinned().unwrap().len());
+    assert_eq!(counts.trash as usize, store.list_deleted().unwrap().len());
+    // Sanity: the seeded store actually exercises every bucket.
+    assert!(counts.todo >= 1 && counts.today >= 2 && counts.untagged >= 1);
+    assert_eq!(counts.pinned, 1);
+    assert_eq!(counts.trash, 1);
+}

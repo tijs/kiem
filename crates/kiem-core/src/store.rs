@@ -59,6 +59,16 @@ pub struct NoteStore {
     search: Option<SearchIndex>,
 }
 
+/// Sidebar smart-filter match counts (see [`NoteStore::filter_counts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilterCounts {
+    pub todo: u64,
+    pub today: u64,
+    pub untagged: u64,
+    pub pinned: u64,
+    pub trash: u64,
+}
+
 /// One unchecked todo item belonging to a project's notes. The `(note_id, index)`
 /// pair is its address — `index` is the item's position among checkboxes within
 /// that note (see [`content::extract_todo_items`]).
@@ -364,10 +374,33 @@ impl NoteStore {
 
     /// Notes last modified today (UTC).
     pub fn list_today(&self) -> Result<Vec<NoteMetadata>, StoreError> {
-        let now = OffsetDateTime::now_utc()
-            .format(&Rfc3339)
-            .expect("RFC 3339 formatting of a valid UTC time cannot fail");
-        self.list_modified_on(&now[..10])
+        self.list_modified_on(&today_utc())
+    }
+
+    /// Match counts for every smart filter in one table scan — the sidebar
+    /// needs only the numbers, not five materialized lists. Predicates are
+    /// exactly the ones the corresponding `list_*` queries use.
+    pub fn filter_counts(&self) -> Result<FilterCounts, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT
+               COUNT(*) FILTER (WHERE deleted = 0 AND has_todos = 1),
+               COUNT(*) FILTER (WHERE deleted = 0 AND substr(modified_at, 1, 10) = ?1),
+               COUNT(*) FILTER (WHERE deleted = 0 AND tags = '[]'),
+               COUNT(*) FILTER (WHERE deleted = 0 AND pinned = 1),
+               COUNT(*) FILTER (WHERE deleted = 1)
+             FROM notes",
+            params![today_utc()],
+            |r| {
+                let count = |i: usize| -> rusqlite::Result<u64> { Ok(r.get::<_, i64>(i)? as u64) };
+                Ok(FilterCounts {
+                    todo: count(0)?,
+                    today: count(1)?,
+                    untagged: count(2)?,
+                    pinned: count(3)?,
+                    trash: count(4)?,
+                })
+            },
+        )?)
     }
 
     pub fn list_untagged(&self) -> Result<Vec<NoteMetadata>, StoreError> {
@@ -622,6 +655,14 @@ fn ensure_status_column(conn: &Connection) -> rusqlite::Result<()> {
 
 fn tags_json(tags: &[String]) -> String {
     serde_json::to_string(tags).expect("a Vec<String> always serializes to JSON")
+}
+
+/// Today's UTC calendar date, `YYYY-MM-DD`.
+fn today_utc() -> String {
+    let now = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("RFC 3339 formatting of a valid UTC time cannot fail");
+    now[..10].to_owned()
 }
 
 fn now_rfc3339() -> String {
