@@ -6,181 +6,23 @@
 //! the body per the content contract, so `--title` is sugar that prepends an
 //! H1 heading line.
 
+mod args;
 mod daemon;
 mod project;
 
 use std::io::{IsTerminal, Read};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::Parser;
+
+use args::{Cli, Command, NoteAction, PairAction, ProjectAction, TodoAction};
 use kiem_core::note::NoteMetadata;
 use kiem_core::store::NoteStore;
 use serde_json::json;
 
 /// Stand-in author until the identity module (U11) provides real DIDs.
 const AUTHOR_PLACEHOLDER: &str = "local";
-
-#[derive(Parser)]
-#[command(name = "kiem", version, about = "Kiem: P2P notes for humans and agents")]
-struct Cli {
-    /// Data directory (default: ~/.kiem)
-    #[arg(long, global = true, value_name = "DIR")]
-    data_dir: Option<PathBuf>,
-
-    /// Structured JSON output
-    #[arg(long, global = true)]
-    json: bool,
-
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    /// Create a note from --body and/or stdin; --title prepends an H1 heading
-    Create {
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        body: Option<String>,
-    },
-    /// List notes, most recently modified first
-    List {
-        /// Only notes carrying this exact tag
-        #[arg(long)]
-        tag: Option<String>,
-    },
-    /// Show one note (metadata + body)
-    Show { id: String },
-    /// Replace a note's body from --body or stdin
-    Edit {
-        id: String,
-        #[arg(long)]
-        body: Option<String>,
-    },
-    /// Replace a 1-based inclusive line range with --text or stdin (a targeted,
-    /// scalar-safe edit). Pass --expect <version> from `show` to reject the edit
-    /// if the note changed since you read it.
-    EditLines {
-        id: String,
-        /// First line to replace (1-based, inclusive).
-        start: usize,
-        /// Last line to replace (1-based, inclusive; equals start for one line).
-        end: usize,
-        /// Replacement text (may be multi-line); empty deletes the range.
-        /// Hyphen-led values are fine (todo lines start with `- `).
-        #[arg(long, allow_hyphen_values = true)]
-        text: Option<String>,
-        /// Reject unless the note's current version matches (from `show`).
-        #[arg(long)]
-        expect: Option<String>,
-    },
-    /// Full-text search over titles, bodies, and tags
-    Search {
-        query: String,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// List all tags with usage counts
-    Tags,
-    /// Move a note to trash (soft delete)
-    Delete { id: String },
-    /// Manage projects (a project is the reserved tag proj/<slug>)
-    Project {
-        #[command(subcommand)]
-        action: ProjectAction,
-    },
-    /// List the current project's open todos (note-id, index, text)
-    Todos {
-        /// Override the resolved project (a name or proj/<slug>)
-        #[arg(long)]
-        project: Option<String>,
-    },
-    /// Check or uncheck a todo by its (note-id, index) address
-    Todo {
-        #[command(subcommand)]
-        action: TodoAction,
-    },
-    /// Add a note to the current project
-    Note {
-        #[command(subcommand)]
-        action: NoteAction,
-    },
-    /// List the current project's notes
-    Notes {
-        /// Override the resolved project (a name or proj/<slug>)
-        #[arg(long)]
-        project: Option<String>,
-        /// Only notes of this kind (e.g. plan, brainstorm, review, solution)
-        #[arg(long = "type")]
-        note_type: Option<String>,
-    },
-    /// Run the sync daemon (foreground): connect known peers, keep notes converged
-    Sync {
-        /// Sync round interval in milliseconds
-        #[arg(long, default_value_t = 1000)]
-        interval_ms: u64,
-    },
-    /// Show the running daemon's peers and state
-    SyncStatus,
-    /// Manage trusted sync peers (pairing replaces LAN auto-discovery)
-    Pair {
-        #[command(subcommand)]
-        action: PairAction,
-    },
-}
-
-#[derive(Subcommand)]
-enum PairAction {
-    /// Print this device's shareable ticket; paste/scan it on another device
-    Show,
-    /// Trust the device behind a pasted/scanned ticket
-    Add { ticket: String },
-}
-
-#[derive(Subcommand)]
-enum ProjectAction {
-    /// Register the current directory as a project: write the .kiem marker, add an
-    /// AGENTS.md pointer, and (for a new project) create a home note
-    Add { name: String },
-    /// List known projects (derived from proj/* tags with note counts)
-    List,
-    /// Print the project resolved for the current directory
-    Current,
-}
-
-#[derive(Subcommand)]
-enum TodoAction {
-    /// Append a todo to a note: kiem todo add <note-id> "<text>"
-    Add { note_id: String, text: String },
-    /// Mark a todo done: kiem todo check <note-id> <index>
-    Check { note_id: String, index: usize },
-    /// Mark a todo not done: kiem todo uncheck <note-id> <index>
-    Uncheck { note_id: String, index: usize },
-}
-
-#[derive(Subcommand)]
-enum NoteAction {
-    /// Add a note to the current project (tags it proj/<slug>)
-    Add {
-        /// Note text; the first line becomes the title
-        text: String,
-        /// Override the resolved project (a name or proj/<slug>)
-        #[arg(long)]
-        project: Option<String>,
-        /// Kind of note (e.g. plan, brainstorm, review, solution, decision, doc).
-        /// Defaults to a plain note.
-        #[arg(long = "type")]
-        note_type: Option<String>,
-    },
-    /// Reclassify a note's kind: kiem note set-type <id> <type>
-    SetType {
-        note_id: String,
-        /// New kind (empty resets to the default note)
-        note_type: String,
-    },
-}
 
 fn main() {
     if let Err(err) = run() {
