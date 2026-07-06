@@ -33,6 +33,7 @@ final class KiemModel {
     /// is thread-safe and needs to run from `deinit`, which is nonisolated.
     private nonisolated(unsafe) var dbWatchSources: [DispatchSourceFileSystemObject] = []
     private nonisolated(unsafe) var pendingRefreshTask: Task<Void, Never>?
+    private nonisolated(unsafe) var terminateObserver: NSObjectProtocol?
 
     var selection: SidebarSelection = .allNotes {
         didSet { refreshNotes() }
@@ -106,7 +107,7 @@ final class KiemModel {
         startSync()
         watchStoreForExternalWrites(dataDir: dataDir)
         // Cmd-Q inside the debounce window must not lose the last keystrokes.
-        NotificationCenter.default.addObserver(
+        terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.flushPendingEdit() }
@@ -119,6 +120,9 @@ final class KiemModel {
         }
         pendingRefreshTask?.cancel()
         pendingEditTask?.cancel()
+        if let terminateObserver {
+            NotificationCenter.default.removeObserver(terminateObserver)
+        }
         store.stopSync()
     }
 
@@ -148,11 +152,11 @@ final class KiemModel {
 
     /// Watch the shared SQLite store for writes from outside our own mutation
     /// calls: an external `kiem` CLI process, or an incoming P2P sync applied by
-    /// `PeerConnection.syncRound()`. Both land in the same on-disk file (WAL
-    /// mode — `crates/kiem-core/src/store.rs`), so one watcher covers both; no
-    /// need to also wire a callback through `PeerConnection`. Debounced so a
-    /// burst of writes triggers one refresh, not one per write — the app's own
-    /// writes harmlessly retrigger a refresh too, which isn't worth special-casing away.
+    /// the Rust mesh (`kiem-sync`). Both land in the same on-disk file (WAL
+    /// mode — `crates/kiem-core/src/store/`), so one watcher covers both; no
+    /// per-note sync callback is needed. Debounced so a burst of writes
+    /// triggers one refresh, not one per write — the app's own writes
+    /// harmlessly retrigger a refresh too, which isn't worth special-casing away.
     private func watchStoreForExternalWrites(dataDir: URL) {
         let paths = ["kiem.db", "kiem.db-wal"].map { dataDir.appendingPathComponent($0).path }
         dbWatchSources = paths.compactMap { path in

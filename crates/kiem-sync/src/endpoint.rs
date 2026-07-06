@@ -4,7 +4,7 @@ use iroh::{
 };
 
 /// ALPN identifying kiem's sync protocol. Bumped only on a wire-incompatible
-/// change to what's carried over the stream (see kiem-core's `protocol.rs`).
+/// change to what's carried over the stream (see `session.rs`'s frame format).
 pub const ALPN: &[u8] = b"kiem-sync/0";
 
 #[derive(thiserror::Error, Debug)]
