@@ -365,6 +365,11 @@ private final class SyncPeerEvents: PeerEvents {
         self.onChange = onChange
     }
 
-    func onConnected(peerId: String) { onChange(peerId, true) }
-    func onDisconnected(peerId: String) { onChange(peerId, false) }
+    func onConnected(peerId: String) {
+        onChange(peerId, true)
+    }
+
+    func onDisconnected(peerId: String) {
+        onChange(peerId, false)
+    }
 }

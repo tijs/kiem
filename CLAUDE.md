@@ -14,8 +14,9 @@ This repo also holds all cross-cutting `docs/` for the whole project.
 
 **Current state:** all three crates exist (`kiem-core`, `kiem-cli`, `kiem-ffi`) plus a
 working `apple/` macOS SwiftUI app. The core owns Automerge note storage, SQLite
-denormalized metadata, tantivy search, and local-network P2P sync (mDNS over
-`_kiem._tcp`). The CLI does CRUD + a sync daemon. The macOS app does CRUD, tags, smart
+denormalized metadata, tantivy search, and P2P sync over an iroh mesh
+(`kiem-sync`: ticket pairing, LAN + cross-network with relay fallback). The CLI
+does CRUD + a sync daemon. The macOS app does CRUD, tags, smart
 filters, full-text search, trash/restore, a formatting toolbar (over the Pulp editor),
 and background P2P sync. Roadmap (`docs/plans/`) tracks units U1–U17: U1–U8 and U12 are
 done; remaining are live-sync→editor refresh (U10), identity/DIDs (U11), sync-status UI
