@@ -5,7 +5,7 @@
 //! connection closes.
 //!
 //! This ports `kiem-cli`'s former TCP daemon loop onto iroh: same framing
-//! (`kiem_core::protocol`), same [`SyncEngine`] semantics, async instead of
+//! (see [`write_frame`]), same [`SyncEngine`] semantics, async instead of
 //! OS threads. iroh authenticates the peer's `EndpointId` as part of the
 //! connection handshake, so — unlike the TCP version — there's no need for a
 //! hello frame to identify who's on the other end.
@@ -14,9 +14,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError};
-use kiem_core::protocol::{ProtocolError, MAX_DOC_ID_LEN, MAX_PAYLOAD_LEN};
 use kiem_core::store::NoteStore;
 use kiem_core::sync::{SyncEngine, SyncError};
+
+/// Note ids are UUIDs today; leave generous headroom.
+const MAX_DOC_ID_LEN: u32 = 1024;
+/// A full document snapshot travels inside one sync message.
+const MAX_PAYLOAD_LEN: u32 = 64 * 1024 * 1024;
 
 #[derive(thiserror::Error, Debug)]
 pub enum SessionError {
@@ -26,8 +30,12 @@ pub enum SessionError {
     Write(#[from] WriteError),
     #[error("stream read error: {0}")]
     Read(#[from] ReadExactError),
-    #[error("protocol error: {0}")]
-    Protocol(#[from] ProtocolError),
+    /// Length limits guard against garbage on the wire — a bad frame is an
+    /// error, not an allocation.
+    #[error("frame field too large: {field} is {len} bytes (max {max})")]
+    Oversized { field: &'static str, len: u32, max: u32 },
+    #[error("doc id is not valid UTF-8")]
+    BadDocId,
     #[error("sync error: {0}")]
     Sync(#[from] SyncError),
 }
@@ -124,9 +132,9 @@ async fn reader_loop(
     }
 }
 
-/// Wire format matches `kiem_core::protocol` exactly: `[doc_id_len][doc_id
-/// bytes][payload_len][payload bytes]`, all lengths big-endian u32. No
-/// control frames — iroh's handshake already authenticates the peer id.
+/// Wire format: `[doc_id_len][doc_id bytes][payload_len][payload bytes]`, all
+/// lengths big-endian u32. No control frames — iroh's handshake already
+/// authenticates the peer id. (Same framing the pre-iroh TCP daemon used.)
 async fn write_frame(send: &mut SendStream, doc_id: &str, payload: &[u8]) -> Result<(), SessionError> {
     let id = doc_id.as_bytes();
     check_len("doc_id", id.len(), MAX_DOC_ID_LEN)?;
@@ -142,7 +150,7 @@ async fn read_frame(recv: &mut RecvStream) -> Result<(String, Vec<u8>), SessionE
     let id_len = read_len(recv, "doc_id", MAX_DOC_ID_LEN).await?;
     let mut id = vec![0u8; id_len as usize];
     recv.read_exact(&mut id).await?;
-    let doc_id = String::from_utf8(id).map_err(|_| ProtocolError::BadDocId)?;
+    let doc_id = String::from_utf8(id).map_err(|_| SessionError::BadDocId)?;
 
     let payload_len = read_len(recv, "payload", MAX_PAYLOAD_LEN).await?;
     let mut payload = vec![0u8; payload_len as usize];
@@ -158,9 +166,9 @@ async fn read_len(recv: &mut RecvStream, field: &'static str, max: u32) -> Resul
     Ok(len)
 }
 
-fn check_len(field: &'static str, len: usize, max: u32) -> Result<(), ProtocolError> {
+fn check_len(field: &'static str, len: usize, max: u32) -> Result<(), SessionError> {
     if len as u64 > max as u64 {
-        return Err(ProtocolError::Oversized {
+        return Err(SessionError::Oversized {
             field,
             len: len as u32,
             max,
