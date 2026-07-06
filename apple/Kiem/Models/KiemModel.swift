@@ -22,11 +22,9 @@ final class KiemModel {
     private(set) var projectTodos: [ProjectTodo] = []
     /// Live match counts per smart filter, shown beside its sidebar row.
     private(set) var filterCounts: [SmartFilter: Int] = [:]
-    /// Peers currently linked for sync (drives the sync-status UI in U13).
-    private(set) var connectedPeers: [ConnectedPeer] = []
+    /// Ids of peers currently linked for sync (drives the sync-status UI in U13).
+    private(set) var connectedPeers: [String] = []
     var errorMessage: String?
-
-    private var peerManager: PeerManager?
     /// Watches `kiem.db`/`kiem.db-wal` for writes from outside our own mutation
     /// calls (an external `kiem` CLI process, or incoming P2P sync). See
     /// `watchStoreForExternalWrites`.
@@ -101,17 +99,31 @@ final class KiemModel {
             source.cancel()
         }
         pendingRefreshTask?.cancel()
+        store.stopSync()
     }
 
-    /// Begin P2P sync: discover peers on the local network and converge notes,
-    /// the same Bonjour service (`_kiem._tcp`) the CLI daemon uses.
+    /// Begin P2P sync: join the iroh mesh in the Rust core (`kiem-sync`), the
+    /// same transport and known-peers store the CLI daemon uses. Peers are
+    /// added by ticket pairing (`kiem pair`); incoming sync writes land in the
+    /// shared SQLite store, where the DB watcher picks them up for the UI.
     private func startSync() {
-        let manager = PeerManager(store: store, localPeerId: Self.peerID())
-        manager.onPeersChanged = { [weak self] peers in
-            Task { @MainActor in self?.connectedPeers = peers }
+        let events = SyncPeerEvents { [weak self] peerId, connected in
+            Task { @MainActor in
+                guard let self else { return }
+                var peers = Set(self.connectedPeers)
+                if connected { peers.insert(peerId) } else { peers.remove(peerId) }
+                self.connectedPeers = peers.sorted()
+            }
         }
-        manager.start()
-        peerManager = manager
+        let store = self.store
+        // Off the main actor: binding the endpoint touches the network.
+        Task.detached {
+            do {
+                try store.startSync(intervalMs: 1000, events: events)
+            } catch {
+                debugPrint("kiem sync failed to start: \(error)")
+            }
+        }
     }
 
     /// Watch the shared SQLite store for writes from outside our own mutation
@@ -143,20 +155,6 @@ final class KiemModel {
             guard !Task.isCancelled else { return }
             self?.refresh()
         }
-    }
-
-    /// Stable peer id for this install. `KIEM_PEER_ID` overrides it so several
-    /// instances can run on one machine during development (otherwise they'd
-    /// share UserDefaults, see the same id, and treat each other as self).
-    private static func peerID() -> String {
-        if let override = ProcessInfo.processInfo.environment["KIEM_PEER_ID"], !override.isEmpty {
-            return override
-        }
-        let key = "org.tijs.kiem.peerID"
-        if let existing = UserDefaults.standard.string(forKey: key) { return existing }
-        let fresh = UUID().uuidString
-        UserDefaults.standard.set(fresh, forKey: key)
-        return fresh
     }
 
     /// Default data directory — the same one the CLI uses, so the app and
@@ -356,4 +354,17 @@ final class KiemModel {
             return nil
         }
     }
+}
+
+/// Bridges `kiem-sync` mesh callbacks (arriving on Rust threads) to one
+/// Sendable closure; the model hops them onto the main actor.
+private final class SyncPeerEvents: PeerEvents {
+    private let onChange: @Sendable (_ peerId: String, _ connected: Bool) -> Void
+
+    init(onChange: @escaping @Sendable (_ peerId: String, _ connected: Bool) -> Void) {
+        self.onChange = onChange
+    }
+
+    func onConnected(peerId: String) { onChange(peerId, true) }
+    func onDisconnected(peerId: String) { onChange(peerId, false) }
 }
