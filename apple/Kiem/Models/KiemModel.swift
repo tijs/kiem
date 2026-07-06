@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import KiemKit
 import Observation
@@ -80,18 +81,36 @@ final class KiemModel {
     }
 
     /// Editor binding for the selected note. While editing, this is the
-    /// source of truth; the store mirrors it on every change.
+    /// source of truth; the store mirrors it a debounce interval behind
+    /// (each store write is a full CRDT round-trip plus a search reindex,
+    /// and mints a permanent Automerge change — too heavy per keystroke).
     var editorText: String = ""
 
-    /// The body last loaded into the editor. Lets `editorTextDidChange`
-    /// distinguish a programmatic load (no write needed) from a real user edit.
+    /// The body last loaded into the editor or flushed to the store. Lets
+    /// `editorTextDidChange` distinguish a programmatic load (no write
+    /// needed) from a real user edit.
     private var loadedBody = ""
+
+    /// The not-yet-persisted edit, captured as (note, text) when scheduled so
+    /// a flush always targets the note that was edited, never the current
+    /// selection. Flushed after `Self.editDebounce` of typing silence, and
+    /// synchronously wherever the write could otherwise be lost or misordered
+    /// (note switch, delete, todo toggle, app quit).
+    private var pendingEdit: (noteID: String, text: String)?
+    private nonisolated(unsafe) var pendingEditTask: Task<Void, Never>?
+    private static let editDebounce: Duration = .milliseconds(400)
 
     init(dataDir: URL) throws {
         store = try KiemStore.open(dataDir: dataDir.path)
         refresh()
         startSync()
         watchStoreForExternalWrites(dataDir: dataDir)
+        // Cmd-Q inside the debounce window must not lose the last keystrokes.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushPendingEdit() }
+        }
     }
 
     deinit {
@@ -99,6 +118,7 @@ final class KiemModel {
             source.cancel()
         }
         pendingRefreshTask?.cancel()
+        pendingEditTask?.cancel()
         store.stopSync()
     }
 
@@ -198,6 +218,8 @@ final class KiemModel {
 
     /// Toggle a project todo by its (note, index) address and refresh.
     func toggleProjectTodo(noteID: String, index: UInt32, checked: Bool) {
+        // A pending body edit to the same note would clobber the toggle.
+        flushPendingEdit()
         report { try store.setTodoChecked(noteId: noteID, index: index, checked: checked) }
         refresh()
         // If the toggled note is open in the editor, re-sync its text. Otherwise
@@ -302,6 +324,8 @@ final class KiemModel {
     }
 
     func deleteNote(id: String) {
+        // Don't let a pending edit land in the note after it's trashed.
+        flushPendingEdit()
         report { try store.deleteNote(id: id) }
         if selectedNoteID == id {
             selectedNoteID = nil
@@ -315,7 +339,8 @@ final class KiemModel {
         refresh()
     }
 
-    /// Editor change → Rust (re-derives title/tags) → refresh metadata.
+    /// Editor change → schedule a debounced store write (Rust re-derives
+    /// title/tags at flush time, then metadata refreshes).
     func editorTextDidChange() {
         guard let id = selectedNoteID else { return }
         // Loading a note assigns `editorText` programmatically, which also fires
@@ -324,13 +349,31 @@ final class KiemModel {
         // a mismatched embedded core, clobbering data). See
         // docs/solutions/integration-issues/stale-prebuilt-kiemkit-xcframework-clobbers-tags-2026-06-20.md
         guard editorText != loadedBody else { return }
-        loadedBody = editorText
-        report { try store.updateNote(id: id, body: editorText) }
+        pendingEdit = (noteID: id, text: editorText)
+        pendingEditTask?.cancel()
+        pendingEditTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.editDebounce)
+            guard !Task.isCancelled else { return }
+            self?.flushPendingEdit()
+        }
+    }
+
+    /// Persist the pending edit now (if any) and refresh derived state.
+    private func flushPendingEdit() {
+        pendingEditTask?.cancel()
+        pendingEditTask = nil
+        guard let (id, text) = pendingEdit else { return }
+        pendingEdit = nil
+        if id == selectedNoteID { loadedBody = text }
+        report { try store.updateNote(id: id, body: text) }
         refreshNotes()
         refreshSidebar()
     }
 
     private func loadSelectedNote() {
+        // Selection already points at the new note; this persists the
+        // previous note's still-pending text before its editor state goes away.
+        flushPendingEdit()
         guard let id = selectedNoteID,
               let note = report({ try store.getNote(id: id) }) ?? nil
         else {
