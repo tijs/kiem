@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.10 - 2026-07-06
+
+- Added: app sync now uses the shared `kiem-sync` iroh mesh directly, so the macOS app and CLI share the same pairing/relay transport instead of the old Bonjour stack.
+- Added: newly-created notes are authored by the device's iroh EndpointId instead of the placeholder `local`, giving synced notes stable per-device authorship.
+- Improved: editor persistence is debounced (one store write per pause, not per keystroke) and sidebar smart-filter counts are computed in one scan.
+- Maintenance: split oversized core/CLI/FFI files under the 500-line limit and removed the unused framed-TCP codec.
+
 ## 0.1.0-alpha.9 - 2026-07-05
 
 - Fixed: the editor pane could go blank (no data loss) when a store refresh raced a sync or external write — a transient DB read failure emptied the note list and spuriously cleared the selection. A failed refresh now leaves the list and selection untouched.
