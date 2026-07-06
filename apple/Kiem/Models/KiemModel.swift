@@ -8,11 +8,12 @@ import Observation
 /// state Swift owns while a note is open.
 @Observable @MainActor
 final class KiemModel {
-    /// Stand-in author until the identity module (U11) provides real DIDs.
-    /// Matches the CLI so app- and CLI-created notes look the same.
-    private static let authorPlaceholder = "local"
-
     private let store: KiemStore
+
+    /// Note authorship: this device's iroh identity (same id the CLI uses and
+    /// peers see on the mesh). Falls back to "local" only if the identity key
+    /// is unreadable — in which case sync is broken too and will say so.
+    private let authorDid: String
 
     private(set) var notes: [NoteMetadata] = []
     /// Tags excluding the `proj/*` namespace (those surface under Projects).
@@ -103,6 +104,7 @@ final class KiemModel {
 
     init(dataDir: URL) throws {
         store = try KiemStore.open(dataDir: dataDir.path)
+        authorDid = (try? store.deviceDid()) ?? "local"
         refresh()
         startSync()
         watchStoreForExternalWrites(dataDir: dataDir)
@@ -281,7 +283,7 @@ final class KiemModel {
             errorMessage = "Couldn’t make a project name from “\(name)”. Use letters or numbers."
             return
         }
-        report { try store.createNote(body: "# \(name)\n\nProject home.\n\n#\(tag)", authorDid: Self.authorPlaceholder) }
+        report { try store.createNote(body: "# \(name)\n\nProject home.\n\n#\(tag)", authorDid: authorDid) }
         refresh()
         selection = .project(tag)
     }
@@ -327,7 +329,7 @@ final class KiemModel {
 
     func createNote() {
         guard let meta = report({
-            try store.createNote(body: "# ", authorDid: Self.authorPlaceholder)
+            try store.createNote(body: "# ", authorDid: authorDid)
         }) else { return }
         refresh()
         selectedNoteID = meta.id

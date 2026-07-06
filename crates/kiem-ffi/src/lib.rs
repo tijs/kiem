@@ -195,6 +195,13 @@ impl KiemStore {
 
     // -- P2P sync mesh (kiem-sync / iroh) --
 
+    /// This device's stable identity (its iroh `EndpointId`, hex) — the id
+    /// peers see on the mesh, and the value to pass as `author_did` when
+    /// creating notes. Created on first use, persisted in the data dir.
+    pub fn device_did(&self) -> Result<String, KiemError> {
+        Ok(kiem_sync::device_id(&self.data_dir).map_err(sync_err)?.to_string())
+    }
+
     /// Binds this device's identity, accepts incoming connections, and dials
     /// every known peer. No-op if already running.
     pub fn start_sync(&self, interval_ms: u64, events: Arc<dyn PeerEvents>) -> Result<(), KiemError> {

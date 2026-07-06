@@ -1,6 +1,16 @@
 use std::path::Path;
 
-use iroh::SecretKey;
+use iroh::{EndpointId, SecretKey};
+
+/// File inside the data dir holding this device's ed25519 secret key.
+pub const IDENTITY_FILE: &str = "identity.key";
+
+/// This device's stable public identity: the `EndpointId` of the persisted
+/// key in `data_dir` (created on first use). It addresses the device on the
+/// mesh *and* attributes note edits (`author_did`) — one identity for both.
+pub fn device_id(data_dir: &Path) -> Result<EndpointId, IdentityError> {
+    Ok(load_or_create(&data_dir.join(IDENTITY_FILE))?.public())
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum IdentityError {

@@ -21,8 +21,11 @@ use kiem_core::note::NoteMetadata;
 use kiem_core::store::NoteStore;
 use serde_json::json;
 
-/// Stand-in author until the identity module (U11) provides real DIDs.
-const AUTHOR_PLACEHOLDER: &str = "local";
+/// Note authorship: this device's iroh `EndpointId` (the persisted identity
+/// in the data dir, created on first use) — the same id peers see on the mesh.
+fn author(data_dir: &Path) -> Result<String> {
+    Ok(kiem_sync::device_id(data_dir)?.to_string())
+}
 
 fn main() {
     if let Err(err) = run() {
@@ -62,7 +65,7 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Create { title, body } => {
             let body = compose_body(title, body)?;
-            let meta = store.create_note(&body, AUTHOR_PLACEHOLDER)?;
+            let meta = store.create_note(&body, &author(&data_dir)?)?;
             if cli.json {
                 print_json(&serde_json::to_value(&meta)?)?;
             } else {
@@ -176,7 +179,7 @@ fn run() -> Result<()> {
                 // is idempotent (re-binding an existing project just rewrites the marker).
                 let created = if store.list_by_tag(&tag)?.is_empty() {
                     let body = format!("# {name}\n\nProject home.\n\n#{tag}");
-                    Some(store.create_note(&body, AUTHOR_PLACEHOLDER)?)
+                    Some(store.create_note(&body, &author(&data_dir)?)?)
                 } else {
                     None
                 };
@@ -289,7 +292,7 @@ fn run() -> Result<()> {
                 };
                 let meta = store.create_note_with_type(
                     &body,
-                    AUTHOR_PLACEHOLDER,
+                    &author(&data_dir)?,
                     note_type.as_deref().unwrap_or_default(),
                 )?;
                 if cli.json {

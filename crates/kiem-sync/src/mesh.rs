@@ -15,7 +15,6 @@ use crate::peers::{self, KnownPeers, PeersError};
 use crate::session::{self, SessionError, SharedState};
 use crate::{endpoint, identity, Endpoint, EndpointAddr, EndpointId, IdentityError};
 
-pub const IDENTITY_FILE: &str = "identity.key";
 pub const PEERS_FILE: &str = "known-peers";
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
@@ -64,7 +63,7 @@ impl Mesh {
         interval: Duration,
         events: Arc<dyn MeshEvents>,
     ) -> Result<Arc<Mesh>, MeshError> {
-        let secret_key = identity::load_or_create(&data_dir.join(IDENTITY_FILE))?;
+        let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
         let endpoint = endpoint::bind(secret_key).await?;
 
         let mesh = Arc::new(Mesh {
@@ -164,7 +163,7 @@ async fn handle_connection(
 /// (a fresh device pairs before it has ever synced). Binds a short-lived
 /// endpoint just long enough to read its address.
 pub async fn pair_ticket(data_dir: &Path) -> Result<String, MeshError> {
-    let secret_key = identity::load_or_create(&data_dir.join(IDENTITY_FILE))?;
+    let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
     let endpoint = endpoint::bind(secret_key).await?;
     let ticket = peers::my_ticket(&endpoint).to_string();
     endpoint.close().await;
