@@ -69,6 +69,9 @@ final class KiemModel {
     /// Permanently erase everything in the trash. Purged notes are tombstoned
     /// in the core so a sync exchange can't resurrect them.
     func emptyTrash() {
+        // A pending debounce edit to a note that's about to be purged would
+        // otherwise flush against a gone id (spurious error alert).
+        flushPendingEdit()
         report { try store.purgeDeleted() }
         refresh()
     }
@@ -80,6 +83,7 @@ final class KiemModel {
     /// Permanently erase a project and every note tagged into it (trashed
     /// ones included), with the same sync-safe tombstoning as Empty Trash.
     func deleteProject(tag: String) {
+        flushPendingEdit()
         report { try store.purgeTag(tag: tag) }
         if selection == .project(tag) {
             selection = .allNotes

@@ -60,14 +60,12 @@ struct NoteListView: View {
                         }
                     }
                     // Under the Todo filter the grouped todos above *are* the
-                    // list — the source-note captions already name every note,
-                    // so note rows would just repeat them.
+                    // list (the captions already name every note), so note rows
+                    // only render elsewhere: grouped by kind under a project,
+                    // flat for All Notes / tags / the other filters.
                     if model.isViewingTodoFilter {
-                        EmptyView()
-                    }
-                    // Under a project, group notes by kind (Plans, Reviews, …);
-                    // elsewhere (All Notes, tags, filters) keep a flat list.
-                    else if model.isViewingProject {
+                        // no note rows
+                    } else if model.isViewingProject {
                         ForEach(noteSections) { section in
                             Section(section.title) {
                                 ForEach(section.notes, id: \.id) { note in
