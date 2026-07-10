@@ -213,6 +213,23 @@ fn project_todos_aggregate_across_tagged_notes_excluding_others() {
 }
 
 #[test]
+fn open_todo_items_aggregate_across_all_live_notes() {
+    let mut store = store_with(&[
+        note("a", "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2", "2026-06-28T10:00:00Z"),
+        note("b", "# B untagged\n- [ ] b1", "2026-06-28T11:00:00Z"),
+        note("c", "# C no todos here", "2026-06-28T12:00:00Z"),
+        note("d", "# D trashed\n- [ ] gone", "2026-06-28T13:00:00Z"),
+    ]);
+    store.delete_note("d").unwrap();
+
+    let todos = store.list_open_todo_items().unwrap();
+    // Every live note's *unchecked* items regardless of tags, note-list order
+    // (most recently modified first) then document order; trashed notes drop out.
+    let texts: Vec<_> = todos.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts, vec!["b1", "a1", "a2"]);
+}
+
+#[test]
 fn set_todo_checked_removes_item_from_aggregate_and_keeps_tags() {
     let mut store = store_with(&[note(
         "a",

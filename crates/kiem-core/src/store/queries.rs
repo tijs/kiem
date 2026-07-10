@@ -178,8 +178,21 @@ impl NoteStore {
     /// order (most recently modified first) then document order. Each item's
     /// `(note_id, index)` addresses it for [`set_todo_checked`](Self::set_todo_checked).
     pub fn list_todo_items_for_tag(&self, tag: &str) -> Result<Vec<ProjectTodo>, StoreError> {
+        let metas = self.list_by_tag(tag)?;
+        self.unchecked_todo_items(metas)
+    }
+
+    /// All unchecked todo items across every live note (the Todo smart
+    /// filter's item view) — same shape and ordering as
+    /// [`list_todo_items_for_tag`](Self::list_todo_items_for_tag), unscoped.
+    pub fn list_open_todo_items(&self) -> Result<Vec<ProjectTodo>, StoreError> {
+        let metas = self.list_todos()?;
+        self.unchecked_todo_items(metas)
+    }
+
+    fn unchecked_todo_items(&self, metas: Vec<NoteMetadata>) -> Result<Vec<ProjectTodo>, StoreError> {
         let mut out = Vec::new();
-        for meta in self.list_by_tag(tag)? {
+        for meta in metas {
             let note = self
                 .get_note(&meta.id)?
                 .ok_or_else(|| StoreError::NotFound(meta.id.clone()))?;

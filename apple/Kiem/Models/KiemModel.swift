@@ -21,7 +21,7 @@ final class KiemModel {
     /// Projects, derived from `proj/*` tags with their note counts.
     private(set) var projects: [TagCount] = []
     /// Open todos for the selected project (empty unless viewing one).
-    private(set) var projectTodos: [ProjectTodo] = []
+    private(set) var openTodos: [ProjectTodo] = []
     /// Live match counts per smart filter, shown beside its sidebar row.
     private(set) var filterCounts: [SmartFilter: Int] = [:]
     /// Ids of peers currently linked for sync (drives the sync-status UI in U13).
@@ -54,6 +54,12 @@ final class KiemModel {
     var isViewingProject: Bool {
         if case .project = selection { return true }
         return false
+    }
+
+    /// Whether the Todo smart filter is active — there the grouped open-todo
+    /// list *is* the view, so the note rows are skipped entirely.
+    var isViewingTodoFilter: Bool {
+        selection == .filter(.todo)
     }
 
     /// Empty-list heading for the current selection.
@@ -211,16 +217,24 @@ final class KiemModel {
         if let selected = selectedNoteID, !listed.contains(where: { $0.id == selected }) {
             selectedNoteID = nil
         }
-        refreshProjectTodos()
+        refreshOpenTodos()
     }
 
-    /// Load (or clear) the selected project's open todos.
-    private func refreshProjectTodos() {
-        guard case let .project(tag) = selection, searchText.isEmpty else {
-            projectTodos = []
+    /// Load (or clear) the open todos for the current view: the selected
+    /// project's, or every note's when the Todo smart filter is active.
+    private func refreshOpenTodos() {
+        guard searchText.isEmpty else {
+            openTodos = []
             return
         }
-        projectTodos = report { try store.listTodoItemsForTag(tag: tag) } ?? []
+        switch selection {
+        case let .project(tag):
+            openTodos = report { try store.listTodoItemsForTag(tag: tag) } ?? []
+        case .filter(.todo):
+            openTodos = report { try store.listOpenTodoItems() } ?? []
+        default:
+            openTodos = []
+        }
     }
 
     /// Toggle a project todo by its (note, index) address and refresh.

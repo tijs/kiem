@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Added: open todos are grouped by source note — subtle captions divide the runs so each todo shows which plan/doc it came from. Applies to a project's "Open todos" panel and to the Todo smart filter, which now lists the actual todos (tap to complete) instead of just the notes containing them.
+
 ## 0.1.0-alpha.11 - 2026-07-10
 
 - Fixed: the recurring "tap a note, the editor shows nothing" bug for real this time. Root cause was in the Pulp editor, not Kiem: the editor's text view could come up zero points wide (created at `.zero` with no width tracking), so the note laid out in an invisible column while the text was present all along. The alpha.4/alpha.7 window-restoration fixes and the alpha.9 refresh guard were different bugs with the same symptom; this one is fixed at the source in Pulp, with regression tests.

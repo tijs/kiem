@@ -19,7 +19,7 @@ struct NoteListView: View {
 
     var body: some View {
         Group {
-            if model.notes.isEmpty && model.projectTodos.isEmpty {
+            if model.notes.isEmpty && model.openTodos.isEmpty {
                 ContentUnavailableView(
                     model.emptyNotesTitle,
                     systemImage: "note.text",
@@ -27,7 +27,7 @@ struct NoteListView: View {
                 )
             } else {
                 List(selection: $model.selectedNoteID) {
-                    if model.isViewingProject && !model.projectTodos.isEmpty {
+                    if !model.openTodos.isEmpty {
                         Section("Open todos") {
                             ForEach(todoGroups) { group in
                                 // Subtle per-source divider: the list still reads
@@ -48,9 +48,15 @@ struct NoteListView: View {
                             }
                         }
                     }
+                    // Under the Todo filter the grouped todos above *are* the
+                    // list — the source-note captions already name every note,
+                    // so note rows would just repeat them.
+                    if model.isViewingTodoFilter {
+                        EmptyView()
+                    }
                     // Under a project, group notes by kind (Plans, Reviews, …);
                     // elsewhere (All Notes, tags, filters) keep a flat list.
-                    if model.isViewingProject {
+                    else if model.isViewingProject {
                         ForEach(noteSections) { section in
                             Section(section.title) {
                                 ForEach(section.notes, id: \.id) { note in
@@ -74,7 +80,7 @@ struct NoteListView: View {
     /// them contiguously per note, so this is a single grouping pass).
     private var todoGroups: [TodoGroup] {
         var groups: [TodoGroup] = []
-        for todo in model.projectTodos {
+        for todo in model.openTodos {
             if let last = groups.indices.last, groups[last].noteId == todo.noteId {
                 groups[last].todos.append(todo)
             } else {

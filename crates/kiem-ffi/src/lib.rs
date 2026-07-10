@@ -169,6 +169,18 @@ impl KiemStore {
         })
     }
 
+    /// All unchecked todo items across every live note (the Todo smart filter),
+    /// same shape and ordering as `list_todo_items_for_tag`.
+    pub fn list_open_todo_items(&self) -> Result<Vec<ProjectTodo>, KiemError> {
+        self.with(|store, _| {
+            Ok(store
+                .list_open_todo_items()?
+                .into_iter()
+                .map(Into::into)
+                .collect())
+        })
+    }
+
     /// Toggle the checkbox at `index` within note `note_id`, persisting the edit.
     pub fn set_todo_checked(
         &self,
