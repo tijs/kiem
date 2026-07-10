@@ -97,6 +97,19 @@ struct NoteListView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.isViewingTrash && !model.notes.isEmpty {
+                HStack {
+                    Spacer()
+                    Button("Empty Trash…", role: .destructive) {
+                        model.isConfirmingEmptyTrash = true
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+        }
         .searchable(text: $model.searchText, prompt: "Search notes")
         .confirmationDialog(
             "Move to Trash?",

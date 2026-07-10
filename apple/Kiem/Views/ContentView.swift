@@ -45,6 +45,18 @@ struct ContentView: View {
         } message: {
             Text("Creates a project. To let an agent work in a repo, run “kiem project add” there.")
         }
+        // Shared by the trash list's button and the sidebar's context menu.
+        .confirmationDialog(
+            "Permanently erase all notes in the Trash?",
+            isPresented: $model.isConfirmingEmptyTrash,
+            titleVisibility: .visible
+        ) {
+            Button("Empty Trash", role: .destructive) {
+                model.emptyTrash()
+            }
+        } message: {
+            Text("This can’t be undone.")
+        }
         .alert(
             "Something went wrong",
             isPresented: Binding(

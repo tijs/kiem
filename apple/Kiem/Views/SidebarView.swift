@@ -26,6 +26,13 @@ struct SidebarView: View {
                         count: model.filterCounts[filter]
                     )
                     .tag(SidebarSelection.filter(filter))
+                    .contextMenu {
+                        if filter == .trash {
+                            Button("Empty Trash…", role: .destructive) {
+                                model.isConfirmingEmptyTrash = true
+                            }
+                        }
+                    }
                 }
             }
 

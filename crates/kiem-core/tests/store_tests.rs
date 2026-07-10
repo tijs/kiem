@@ -213,6 +213,64 @@ fn project_todos_aggregate_across_tagged_notes_excluding_others() {
 }
 
 #[test]
+fn purge_deleted_erases_trash_and_blocks_sync_resurrection() {
+    use kiem_core::sync::SyncEngine;
+
+    // Two stores that have fully converged on one note.
+    let mut store_a = store_with(&[note("n1", "# Doomed note", "2026-06-28T10:00:00Z")]);
+    let mut store_b = NoteStore::open_in_memory().unwrap();
+    let mut engine_a = SyncEngine::new();
+    let mut engine_b = SyncEngine::new();
+    sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
+    assert_eq!(store_b.list_notes().unwrap().len(), 1);
+
+    // B trashes and permanently erases it.
+    store_b.delete_note("n1").unwrap();
+    assert_eq!(store_b.list_deleted().unwrap().len(), 1);
+    assert_eq!(store_b.purge_deleted().unwrap(), 1);
+    assert!(store_b.list_deleted().unwrap().is_empty());
+    assert!(store_b.get_note("n1").unwrap().is_none());
+
+    // A still holds the document; another full exchange must not bring it
+    // back on B (put_doc drops purged ids).
+    sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
+    assert!(store_b.get_note("n1").unwrap().is_none(), "purged note resurrected by sync");
+    assert!(store_b.list_deleted().unwrap().is_empty());
+}
+
+/// Ping-pong sync messages for every doc id until both directions go quiet.
+fn sync_until_converged(
+    store_a: &mut NoteStore,
+    engine_a: &mut kiem_core::sync::SyncEngine,
+    store_b: &mut NoteStore,
+    engine_b: &mut kiem_core::sync::SyncEngine,
+) {
+    for _ in 0..20 {
+        let mut traffic = false;
+        let mut ids = engine_a.doc_ids(store_a).unwrap();
+        for id in engine_b.doc_ids(store_b).unwrap() {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        for id in &ids {
+            if let Some(msg) = engine_a.generate_message(store_a, "b", id).unwrap() {
+                engine_b.receive_message(store_b, "a", id, &msg).unwrap();
+                traffic = true;
+            }
+            if let Some(msg) = engine_b.generate_message(store_b, "a", id).unwrap() {
+                engine_a.receive_message(store_a, "b", id, &msg).unwrap();
+                traffic = true;
+            }
+        }
+        if !traffic {
+            return;
+        }
+    }
+    panic!("sync did not converge");
+}
+
+#[test]
 fn open_todo_items_aggregate_across_all_live_notes() {
     let mut store = store_with(&[
         note("a", "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2", "2026-06-28T10:00:00Z"),

@@ -97,6 +97,13 @@ CREATE TABLE IF NOT EXISTS notes (
     status      TEXT,
     doc         BLOB NOT NULL
 );
+-- Tombstones for permanently erased notes (Empty Trash). The soft `deleted`
+-- flag syncs as part of the note's CRDT; a purge removes the row entirely,
+-- so without a tombstone the next sync exchange with any peer still holding
+-- the document would just resurrect it through `put_doc`.
+CREATE TABLE IF NOT EXISTS purged (
+    id TEXT PRIMARY KEY
+);
 ";
 
 impl NoteStore {
@@ -277,12 +284,49 @@ impl NoteStore {
         self.mutate(id, |note| note.set_deleted(false))
     }
 
+    /// Permanently erase every trashed note: the rows (and their Automerge
+    /// documents) are deleted and each id is tombstoned in `purged`, so a
+    /// later sync receive from a peer that still holds the note cannot
+    /// resurrect it. Returns how many notes were erased.
+    pub fn purge_deleted(&mut self) -> Result<usize, StoreError> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare("SELECT id FROM notes WHERE deleted = 1")?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let tx = self.conn.transaction()?;
+        for id in &ids {
+            tx.execute("INSERT OR IGNORE INTO purged (id) VALUES (?1)", params![id])?;
+        }
+        tx.execute("DELETE FROM notes WHERE deleted = 1", [])?;
+        tx.commit()?;
+        if let Some(index) = &mut self.search {
+            // Soft delete already unindexed them; this is defensive so a purge
+            // can never leave a ghost hit behind.
+            for id in &ids {
+                index.remove_note(id)?;
+            }
+        }
+        Ok(ids.len())
+    }
+
     /// Persist a document that changed outside the normal edit path (sync
     /// receive). Inserts or fully replaces the row from the document's own
     /// hydrated state and keeps the search index in step.
     pub fn put_doc(&mut self, doc: &mut AutoCommit) -> Result<NoteMetadata, StoreError> {
         let note: NoteDoc = hydrate(doc).map_err(|e| document_err("(sync)", e))?;
         let m = &note.metadata;
+        // A purged id was permanently erased (Empty Trash): a peer that still
+        // holds the document must not resurrect it here. Accept-and-drop, so
+        // the sync session still converges from its point of view.
+        let purged: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM purged WHERE id = ?1)",
+            params![m.id],
+            |row| row.get(0),
+        )?;
+        if purged {
+            return Ok(note.metadata);
+        }
         self.conn.execute(
             "INSERT OR REPLACE INTO notes
              (id, title, tags, author_did, note_type, pinned, deleted, has_todos, created_at, modified_at, doc)

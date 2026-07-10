@@ -181,6 +181,12 @@ impl KiemStore {
         })
     }
 
+    /// Permanently erase every trashed note (Empty Trash). Purged ids are
+    /// tombstoned so sync cannot resurrect them. Returns the erased count.
+    pub fn purge_deleted(&self) -> Result<u32, KiemError> {
+        self.with(|store, _| Ok(store.purge_deleted()? as u32))
+    }
+
     /// Toggle the checkbox at `index` within note `note_id`, persisting the edit.
     pub fn set_todo_checked(
         &self,

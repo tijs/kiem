@@ -62,6 +62,17 @@ final class KiemModel {
         selection == .filter(.todo)
     }
 
+    /// Drives the shared Empty Trash confirmation (set from the trash list's
+    /// button and the sidebar's context menu; the dialog lives in ContentView).
+    var isConfirmingEmptyTrash = false
+
+    /// Permanently erase everything in the trash. Purged notes are tombstoned
+    /// in the core so a sync exchange can't resurrect them.
+    func emptyTrash() {
+        report { try store.purgeDeleted() }
+        refresh()
+    }
+
     /// Empty-list heading for the current selection.
     var emptyNotesTitle: String {
         if !searchText.isEmpty { return "No matches for “\(searchText)”" }
