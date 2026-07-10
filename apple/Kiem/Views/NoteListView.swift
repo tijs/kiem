@@ -4,6 +4,10 @@ import SwiftUI
 struct NoteListView: View {
     @Bindable var model: KiemModel
 
+    /// The note a plain-⌫ press asked to trash; non-nil drives the
+    /// confirmation dialog (⌘⌫ trashes immediately, no dialog).
+    @State private var noteAwaitingTrash: NoteMetadata?
+
     /// Human section titles for known note types, in display order. Unknown
     /// non-`note` types get their own section by capitalized name; `note` (the
     /// default) is the catch-all "Notes" bucket, shown last.
@@ -77,9 +81,38 @@ struct NoteListView: View {
                         }
                     }
                 }
+                // Both shortcuts are scoped to the focused list on purpose:
+                // in the editor ⌫/⌘⌫ must keep their text-editing meanings
+                // (delete char / delete to line start).
+                .onKeyPress(keys: [.delete], phases: .down) { press in
+                    guard press.modifiers.contains(.command),
+                          let note = model.selectedNote, !model.isViewingTrash
+                    else { return .ignored }
+                    model.deleteNote(id: note.id)
+                    return .handled
+                }
+                .onDeleteCommand {
+                    guard let note = model.selectedNote, !model.isViewingTrash else { return }
+                    noteAwaitingTrash = note
+                }
             }
         }
         .searchable(text: $model.searchText, prompt: "Search notes")
+        .confirmationDialog(
+            "Move to Trash?",
+            isPresented: Binding(
+                get: { noteAwaitingTrash != nil },
+                set: { if !$0 { noteAwaitingTrash = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: noteAwaitingTrash
+        ) { note in
+            Button("Move “\(note.title.isEmpty ? "Untitled" : note.title)” to Trash", role: .destructive) {
+                model.deleteNote(id: note.id)
+            }
+        } message: { _ in
+            Text("You can restore it from Trash. Tip: ⌘⌫ trashes without asking.")
+        }
     }
 
     /// Open todos chunked into runs by source note, preserving store order

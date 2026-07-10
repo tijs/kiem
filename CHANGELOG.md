@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added: delete from the note list with the keyboard — ⌘⌫ moves the selected note to Trash instantly, plain ⌫ asks for confirmation first. Both only apply while the list has focus; in the editor the keys keep their text-editing meanings.
 - Added: open todos are grouped by source note — subtle captions divide the runs so each todo shows which plan/doc it came from. Applies to a project's "Open todos" panel and to the Todo smart filter, which now lists the actual todos (tap to complete) instead of just the notes containing them.
 
 ## 0.1.0-alpha.11 - 2026-07-10
