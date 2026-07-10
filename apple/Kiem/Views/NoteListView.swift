@@ -156,9 +156,11 @@ private struct NoteRow: View {
     }
 
     private static func dateText(_ rfc3339: String) -> String {
-        guard let date = ISO8601DateFormatter.flexible.date(from: rfc3339) else {
-            return rfc3339
-        }
+        // .iso8601 *parsing* is lenient about fractional seconds: it accepts
+        // the store's variable-precision timestamps (.5965Z, .96832Z, …) and
+        // plain ones alike. (Verified against real store data — the
+        // `.time(includingFractionalSeconds:)` variant parses none of them.)
+        guard let date = try? Date(rfc3339, strategy: .iso8601) else { return rfc3339 }
         return date.formatted(.relative(presentation: .named))
     }
 }
@@ -177,13 +179,4 @@ struct StatusBadge: View {
             .background(.tint.opacity(0.15), in: Capsule())
             .foregroundStyle(.tint)
     }
-}
-
-extension ISO8601DateFormatter {
-    /// Note timestamps carry fractional seconds; tolerate both forms.
-    static let flexible: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 }

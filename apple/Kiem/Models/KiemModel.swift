@@ -30,11 +30,9 @@ final class KiemModel {
     /// Watches `kiem.db`/`kiem.db-wal` for writes from outside our own mutation
     /// calls (an external `kiem` CLI process, or incoming P2P sync). See
     /// `watchStoreForExternalWrites`.
-    /// `nonisolated(unsafe)`: only ever mutated on the main actor, but `cancel()`
-    /// is thread-safe and needs to run from `deinit`, which is nonisolated.
-    private nonisolated(unsafe) var dbWatchSources: [DispatchSourceFileSystemObject] = []
-    private nonisolated(unsafe) var pendingRefreshTask: Task<Void, Never>?
-    private nonisolated(unsafe) var terminateObserver: NSObjectProtocol?
+    private var dbWatchSources: [DispatchSourceFileSystemObject] = []
+    private var pendingRefreshTask: Task<Void, Never>?
+    private var terminateObserver: NSObjectProtocol?
 
     var selection: SidebarSelection = .allNotes {
         didSet { refreshNotes() }
@@ -99,7 +97,7 @@ final class KiemModel {
     /// synchronously wherever the write could otherwise be lost or misordered
     /// (note switch, delete, todo toggle, app quit).
     private var pendingEdit: (noteID: String, text: String)?
-    private nonisolated(unsafe) var pendingEditTask: Task<Void, Never>?
+    private var pendingEditTask: Task<Void, Never>?
     private static let editDebounce: Duration = .milliseconds(400)
 
     init(dataDir: URL) throws {
@@ -116,7 +114,10 @@ final class KiemModel {
         }
     }
 
-    deinit {
+    // Runs on the main actor (SE-0371 isolated deinit), so the watch sources
+    // and tasks — all main-actor state — can be torn down without
+    // `nonisolated(unsafe)` escape hatches.
+    isolated deinit {
         for source in dbWatchSources {
             source.cancel()
         }

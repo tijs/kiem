@@ -16,7 +16,12 @@ permissions:
 jobs:
   release:
     name: Build, notarize, and publish
-    runs-on: macos-15
+    # Keep this on the same macOS/Xcode generation as local dev machines
+    # (Xcode 26 / macOS 26 SDK). Dev builds only ever run against the current
+    # SDK; releasing from a two-generations-older toolchain (macos-15 linked
+    # releases against SDK 15.5) means shipping binaries whose AppKit behavior
+    # nobody has exercised.
+    runs-on: macos-26
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -27,11 +32,21 @@ jobs:
       # ourselves. actions/checkout refuses a `path` outside $GITHUB_WORKSPACE
       # ("../pulp" errors as escaping it), so check it out as a subdirectory
       # instead and symlink it to the sibling location project.yml expects.
+      #
+      # The checkout is pinned to the commit in ./pulp.ref (updated whenever a
+      # release should pick up new Pulp work) so releases are reproducible —
+      # an unpinned default-branch checkout ships whatever Pulp main happens
+      # to be at build time.
+      - name: Resolve pinned Pulp ref
+        id: pulp
+        run: echo "ref=$(cat pulp.ref)" >> "$GITHUB_OUTPUT"
+
       - name: Check out Pulp editor
         uses: actions/checkout@v4
         with:
           repository: tijs/pulp
           path: pulp
+          ref: ${{ steps.pulp.outputs.ref }}
 
       - name: Link Pulp editor as a sibling of this checkout
         run: ln -s "$GITHUB_WORKSPACE/pulp" "$GITHUB_WORKSPACE/../pulp"

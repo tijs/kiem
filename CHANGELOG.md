@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: the recurring "tap a note, the editor shows nothing" bug for real this time. Root cause was in the Pulp editor, not Kiem: the editor's text view could come up zero points wide (created at `.zero` with no width tracking), so the note laid out in an invisible column while the text was present all along. The alpha.4/alpha.7 window-restoration fixes and the alpha.9 refresh guard were different bugs with the same symptom; this one is fixed at the source in Pulp, with regression tests.
+- Changed: Pulp's editor is now TextKit 2-native (`NSTextLayoutManager`); the dead TextKit 1 layout-manager subclass is deleted.
+- Changed: modern-toolchain baseline — macOS 26 deployment target, Swift 6 language mode (app and Pulp), and the release workflow now builds on `macos-26` so shipped binaries link the same SDK generation dev builds are tested against.
+- Changed: releases pin the Pulp checkout to the commit in `pulp.ref` instead of floating on Pulp's main branch, so a release is reproducible.
+- Removed: the leftover `NSBonjourServices` `_kiem._tcp` declaration (the Bonjour discovery stack left in alpha.10's iroh migration).
+
 ## 0.1.0-alpha.10 - 2026-07-06
 
 - Added: app sync now uses the shared `kiem-sync` iroh mesh directly, so the macOS app and CLI share the same pairing/relay transport instead of the old Bonjour stack.

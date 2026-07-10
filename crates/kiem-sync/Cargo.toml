@@ -9,7 +9,12 @@ iroh = "1.0.1"
 iroh-tickets = "1.0.0"
 kiem-core = { path = "../kiem-core" }
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
