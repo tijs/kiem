@@ -1,3 +1,4 @@
+import AppKit
 import KiemKit
 import SwiftUI
 
@@ -79,20 +80,24 @@ struct NoteListView: View {
                         }
                     }
                 }
-                // Both shortcuts are scoped to the focused list on purpose:
-                // in the editor ⌫/⌘⌫ must keep their text-editing meanings
-                // (delete char / delete to line start).
-                .onKeyPress(keys: [.delete], phases: .down) { press in
-                    guard press.modifiers.contains(.command),
-                          let note = model.selectedNote, !model.isViewingTrash
-                    else { return .ignored }
-                    model.deleteNote(id: note.id)
-                    return .handled
-                }
+                // Plain ⌫ rides the responder chain (`onDeleteCommand`), so it
+                // only fires when the list is first responder — the editor keeps
+                // ⌫ = delete-char. ⌘⌫ never reaches this selector (Command
+                // re-routes the key), so it's caught by the monitor below.
                 .onDeleteCommand {
                     guard let note = model.selectedNote, !model.isViewingTrash else { return }
                     noteAwaitingTrash = note
                 }
+                // ⌘⌫ = trash the selected note instantly. A window-local key
+                // monitor is the only thing that reliably sees it (onKeyPress
+                // needs SwiftUI focus a row-click doesn't grant; onDeleteCommand
+                // never gets the Command-modified key). It yields to any text
+                // editor, where ⌘⌫ legitimately means delete-to-line-start.
+                .background(CommandDeleteMonitor {
+                    guard !model.isViewingTrash, let note = model.selectedNote else { return false }
+                    model.deleteNote(id: note.id)
+                    return true
+                })
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -193,6 +198,44 @@ private struct NoteSection: Identifiable {
     let notes: [NoteMetadata]
     var id: String {
         title
+    }
+}
+
+/// Installs a window-local ⌘⌫ (Delete key) monitor. `handle` runs the delete
+/// and returns whether it consumed the event; returning true swallows the
+/// keystroke, false lets it fall through. Yields to text editors so ⌘⌫ keeps
+/// its delete-to-line-start meaning while typing.
+private struct CommandDeleteMonitor: NSViewRepresentable {
+    /// Virtual key code for the Delete/Backspace key.
+    private static let deleteKeyCode: UInt16 = 51
+
+    let handle: () -> Bool
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == Self.deleteKeyCode,
+                  event.modifierFlags.contains(.command)
+            else { return event }
+            // A text view (the editor, or a field editor) owns ⌘⌫ itself.
+            if view.window?.firstResponder is NSText { return event }
+            return handle() ? nil : event
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var monitor: Any?
     }
 }
 

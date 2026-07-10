@@ -91,3 +91,42 @@ targets:
         # Dev builds run unsandboxed: the app shares ~/.kiem with the CLI.
         ENABLE_APP_SANDBOX: NO
         CODE_SIGN_IDENTITY: "-"
+  # UI tests drive the real app against a throwaway KIEM_DATA_DIR — the only
+  # sanctioned way to automate SwiftUI List selection, keyboard shortcuts,
+  # and quit/relaunch checks (AppleScript/synthetic events can't; see the
+  # blank-editor and keyboard-delete sagas). Run: cd apple && xcodebuild test
+  # -project Kiem.xcodeproj -scheme Kiem | xcsift  (takes over the machine
+  # while running).
+  KiemUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [KiemUITests]
+    dependencies:
+      - target: Kiem
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.tijs.kiem.uitests
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
+        SWIFT_VERSION: "6"
+        TEST_TARGET_NAME: Kiem
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: YES
+# Explicit scheme (xcodegen stops auto-generating one once test targets need
+# wiring). archive stays Release — scripts/release/archive.sh depends on it.
+schemes:
+  Kiem:
+    build:
+      targets:
+        Kiem: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - KiemUITests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

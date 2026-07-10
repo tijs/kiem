@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed: ⌘⌫ (instant-trash the selected note) never actually fired — the Command-modified Delete key doesn't reach the list's delete handler. It's now caught by a window-local key monitor that yields to text editors. Plain ⌫ (confirm) was unaffected.
+- Added: a UI-test target (KiemUITests) covering the note-opens-and-survives-relaunch regression, keyboard deletes, and Empty Trash — the flows synthetic-event scripting can't drive.
 - Fixed: sync could silently dead-end right after pairing — QUIC streams open lazily, so when the dialing side had nothing to send (a fresh, empty store) neither side ever spoke and both sat waiting forever. The dialer now always opens with a first sync round, which also cuts first-sync latency by one interval. This was the real cause of the intermittent "paired but nothing syncs" hangs previously blamed on discovery latency.
 
 ## 0.1.0-alpha.12 - 2026-07-10
