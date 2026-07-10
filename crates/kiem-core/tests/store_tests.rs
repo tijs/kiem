@@ -213,7 +213,7 @@ fn project_todos_aggregate_across_tagged_notes_excluding_others() {
 }
 
 #[test]
-fn purge_deleted_erases_trash_and_blocks_sync_resurrection() {
+fn purges_propagate_to_peers_and_win_against_offline_edits() {
     use kiem_core::sync::SyncEngine;
 
     // Two stores that have fully converged on one note.
@@ -224,18 +224,25 @@ fn purge_deleted_erases_trash_and_blocks_sync_resurrection() {
     sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
     assert_eq!(store_b.list_notes().unwrap().len(), 1);
 
-    // B trashes and permanently erases it.
+    // B trashes and permanently erases it; concurrently ("offline") A edits it.
     store_b.delete_note("n1").unwrap();
-    assert_eq!(store_b.list_deleted().unwrap().len(), 1);
     assert_eq!(store_b.purge_deleted().unwrap(), 1);
-    assert!(store_b.list_deleted().unwrap().is_empty());
     assert!(store_b.get_note("n1").unwrap().is_none());
+    store_a.update_note("n1", "# Doomed note\n\nedited while B purged").unwrap();
 
-    // A still holds the document; another full exchange must not bring it
-    // back on B (put_doc drops purged ids).
+    // Full exchange: the purge wins everywhere. B must not resurrect the note
+    // from A's edit (put_doc drops purged ids), and A must adopt the purge
+    // through the synced tombstone doc.
     sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
-    assert!(store_b.get_note("n1").unwrap().is_none(), "purged note resurrected by sync");
+    assert!(store_b.get_note("n1").unwrap().is_none(), "purged note resurrected on B");
+    assert!(store_a.get_note("n1").unwrap().is_none(), "purge did not propagate to A");
+    assert!(store_a.list_deleted().unwrap().is_empty());
     assert!(store_b.list_deleted().unwrap().is_empty());
+
+    // A note created after the purge syncs normally in both directions.
+    store_a.create_note("# Survivor", "did:key:z6MkTest").unwrap();
+    sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
+    assert_eq!(store_b.list_notes().unwrap().len(), 1);
 }
 
 /// Ping-pong sync messages for every doc id until both directions go quiet.

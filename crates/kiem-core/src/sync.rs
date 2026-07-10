@@ -29,6 +29,11 @@ pub enum SyncError {
     Protocol { doc_id: String, message: String },
 }
 
+/// Well-known doc id for the purge set (see `NoteStore::tombstone_doc_bytes`).
+/// It rides the normal per-document sync, so purges propagate with zero
+/// protocol changes; the underscore prefix keeps it clear of note UUIDs.
+pub const TOMBSTONES_DOC_ID: &str = "_kiem/tombstones";
+
 #[derive(Default)]
 pub struct SyncEngine {
     /// (peer_id, doc_id) → sync state.
@@ -43,9 +48,10 @@ impl SyncEngine {
     }
 
     /// Every document id this engine should sync: everything in the store
-    /// (trashed included) plus in-flight documents.
+    /// (trashed included), the tombstone/purge set, plus in-flight documents.
     pub fn doc_ids(&self, store: &NoteStore) -> Result<Vec<String>, SyncError> {
         let mut ids = store.list_all_ids()?;
+        ids.push(TOMBSTONES_DOC_ID.to_owned());
         for id in self.pending.keys() {
             if !ids.contains(id) {
                 ids.push(id.clone());
@@ -68,9 +74,14 @@ impl SyncEngine {
             .states
             .entry((peer.to_owned(), doc_id.to_owned()))
             .or_default();
+        let stored_bytes = if doc_id == TOMBSTONES_DOC_ID {
+            store.tombstone_doc_bytes()?
+        } else {
+            store.get_doc_bytes(doc_id)?
+        };
         let message = if let Some(doc) = self.pending.get_mut(doc_id) {
             doc.sync().generate_sync_message(state)
-        } else if let Some(bytes) = store.get_doc_bytes(doc_id)? {
+        } else if let Some(bytes) = stored_bytes {
             load_doc(doc_id, &bytes)?.sync().generate_sync_message(state)
         } else {
             // Unknown doc: nothing to offer (the peer's message will
@@ -90,9 +101,14 @@ impl SyncEngine {
         bytes: &[u8],
     ) -> Result<(), SyncError> {
         let message = Message::decode(bytes).map_err(|e| SyncError::Decode(e.to_string()))?;
+        let stored_bytes = if doc_id == TOMBSTONES_DOC_ID {
+            store.tombstone_doc_bytes()?
+        } else {
+            store.get_doc_bytes(doc_id)?
+        };
         let mut doc = match self.pending.remove(doc_id) {
             Some(doc) => doc,
-            None => match store.get_doc_bytes(doc_id)? {
+            None => match stored_bytes {
                 Some(bytes) => load_doc(doc_id, &bytes)?,
                 None => AutoCommit::new(),
             },
@@ -105,7 +121,11 @@ impl SyncEngine {
                 message: e.to_string(),
             })?;
 
-        if hydrate::<_, NoteDoc>(&doc).is_ok() {
+        if doc_id == TOMBSTONES_DOC_ID {
+            // The purge set always hydrates (an empty map is valid); adopting
+            // it persists the merged doc and erases the listed notes locally.
+            store.adopt_tombstone_doc(&mut doc)?;
+        } else if hydrate::<_, NoteDoc>(&doc).is_ok() {
             store.put_doc(&mut doc)?;
         } else {
             self.pending.insert(doc_id.to_owned(), doc);

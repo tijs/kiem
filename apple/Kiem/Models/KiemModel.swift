@@ -26,6 +26,9 @@ final class KiemModel {
     private(set) var filterCounts: [SmartFilter: Int] = [:]
     /// Ids of peers currently linked for sync (drives the sync-status UI in U13).
     private(set) var connectedPeers: [String] = []
+    /// Ids of every paired device (reachable or not) — the denominator for
+    /// the sync-status indicator.
+    private(set) var knownPeers: [String] = []
     var errorMessage: String?
     /// Watches `kiem.db`/`kiem.db-wal` for writes from outside our own mutation
     /// calls (an external `kiem` CLI process, or incoming P2P sync). See
@@ -169,12 +172,16 @@ final class KiemModel {
     /// added by ticket pairing (`kiem pair`); incoming sync writes land in the
     /// shared SQLite store, where the DB watcher picks them up for the UI.
     private func startSync() {
+        knownPeers = (try? store.knownPeers()) ?? []
         let events = SyncPeerEvents { [weak self] peerId, connected in
             Task { @MainActor in
                 guard let self else { return }
                 var peers = Set(self.connectedPeers)
                 if connected { peers.insert(peerId) } else { peers.remove(peerId) }
                 self.connectedPeers = peers.sorted()
+                // Pairing happens through the CLI; a newly-trusted peer
+                // connecting is the natural moment to re-read the roster.
+                self.knownPeers = (try? self.store.knownPeers()) ?? []
             }
         }
         let store = self.store

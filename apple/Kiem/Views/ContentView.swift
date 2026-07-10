@@ -21,6 +21,9 @@ struct ContentView: View {
         // again in the window title bar is redundant chrome.
         .navigationTitle("Kiem")
         .toolbar {
+            ToolbarItem {
+                SyncStatusView(model: model)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("New Project", systemImage: "folder.badge.plus") {
                     newProjectName = ""

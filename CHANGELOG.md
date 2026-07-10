@@ -2,10 +2,14 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.12 - 2026-07-10
+
 - Added: Delete Project — right-click a project in the sidebar to permanently erase it and every note tagged into it, trashed ones included. Always asks for confirmation (it can't be undone), and uses the same sync-safe tombstoning as Empty Trash.
 - Added: Empty Trash — a button at the bottom of the Trash listing and a right-click menu on the sidebar's Trash item both permanently erase everything in the trash (after one confirmation; this can't be undone). Purged notes are tombstoned in the store so a later sync exchange with a device that still holds them can't resurrect them.
 - Added: delete from the note list with the keyboard — ⌘⌫ moves the selected note to Trash instantly, plain ⌫ asks for confirmation first. Both only apply while the list has focus; in the editor the keys keep their text-editing meanings.
 - Added: open todos are grouped by source note — subtle captions divide the runs so each todo shows which plan/doc it came from. Applies to a project's "Open todos" panel and to the Todo smart filter, which now lists the actual todos (tap to complete) instead of just the notes containing them.
+- Added: sync status backend — paired and connected peer counts are now exposed through the FFI for the app's toolbar indicator.
+- Changed: pairing tickets now wait briefly for relay registration so tickets carry a live relay hint, cutting cold-discovery first-connect latency.
 
 ## 0.1.0-alpha.11 - 2026-07-10
 

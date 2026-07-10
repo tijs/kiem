@@ -78,3 +78,24 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
         "timed out waiting for a loopback iroh connection — likely no local networking in this environment"
     );
 }
+
+/// The pairing ticket must carry a relay hint: without one the receiving
+/// side dials by bare EndpointId and pays 20–35s of cold discovery on first
+/// connect (finding df5ddfeb). `pair_ticket` waits for relay registration.
+#[tokio::test]
+async fn pair_ticket_carries_a_relay_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+        let ticket = kiem_sync::pair_ticket(dir.path()).await.unwrap();
+        let addr = kiem_sync::parse_ticket(&ticket).unwrap();
+        assert!(
+            addr.relay_urls().next().is_some(),
+            "ticket has no relay hint — pair_ticket read the address before relay registration"
+        );
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "timed out reaching a relay — likely no networking in this environment"
+    );
+}

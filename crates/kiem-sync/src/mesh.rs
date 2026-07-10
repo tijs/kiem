@@ -159,12 +159,21 @@ async fn handle_connection(
     result
 }
 
+/// How long ticket generation waits for relay registration before settling
+/// for a relay-less ticket (an offline machine must still be able to pair).
+const TICKET_RELAY_WAIT: Duration = Duration::from_secs(10);
+
 /// This device's shareable ticket, without needing a `Mesh` already running
 /// (a fresh device pairs before it has ever synced). Binds a short-lived
-/// endpoint just long enough to read its address.
+/// endpoint and waits for relay registration first: an address read straight
+/// after bind carries no relay URL, which forces the peer to dial by bare
+/// EndpointId — 20–35s of cold discovery (the df5ddfeb finding). With the
+/// relay hint in the ticket, the first connect goes through the relay
+/// immediately and upgrades to direct.
 pub async fn pair_ticket(data_dir: &Path) -> Result<String, MeshError> {
     let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
     let endpoint = endpoint::bind(secret_key).await?;
+    let _ = tokio::time::timeout(TICKET_RELAY_WAIT, endpoint.online()).await;
     let ticket = peers::my_ticket(&endpoint).to_string();
     endpoint.close().await;
     Ok(ticket)

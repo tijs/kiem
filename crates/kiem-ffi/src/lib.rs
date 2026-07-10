@@ -272,6 +272,14 @@ impl KiemStore {
         Ok(id.to_string())
     }
 
+    /// Ids of every paired device (the known-peers file), whether or not it
+    /// is currently reachable — the denominator for the sync-status UI.
+    pub fn known_peers(&self) -> Result<Vec<String>, KiemError> {
+        let peers = kiem_sync::KnownPeers::load(&self.data_dir.join(kiem_sync::PEERS_FILE))
+            .map_err(sync_err)?;
+        Ok(peers.ids().into_iter().map(|id| id.to_string()).collect())
+    }
+
     /// Currently-connected peer ids, or empty if sync isn't running.
     pub fn connected_peers(&self) -> Vec<String> {
         match self.sync.lock().expect("sync lock poisoned").as_ref() {
