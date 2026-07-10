@@ -83,6 +83,15 @@ impl SyncEngine {
             doc.sync().generate_sync_message(state)
         } else if let Some(bytes) = stored_bytes {
             load_doc(doc_id, &bytes)?.sync().generate_sync_message(state)
+        } else if doc_id == TOMBSTONES_DOC_ID {
+            // The tombstone doc syncs even before any purge exists: an empty
+            // document still yields an initial handshake message, which
+            // guarantees a freshly-paired empty store says *something* first.
+            // That matters mechanically — QUIC streams open lazily, so a
+            // dialer with nothing to send would leave the acceptor parked in
+            // accept_bi forever and nothing would ever sync (the empty-dialer
+            // deadlock behind the intermittent "final state: []" test hangs).
+            AutoCommit::new().sync().generate_sync_message(state)
         } else {
             // Unknown doc: nothing to offer (the peer's message will
             // introduce it through receive_message).

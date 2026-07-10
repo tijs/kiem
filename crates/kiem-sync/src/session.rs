@@ -81,11 +81,14 @@ async fn ticker_loop(
     send: Arc<tokio::sync::Mutex<SendStream>>,
     interval: Duration,
 ) {
+    // First round immediately: on the dialed side this is what actually
+    // transmits the lazily-opened QUIC stream, letting the acceptor's
+    // accept_bi complete (and it cuts first-sync latency by one interval).
     loop {
-        tokio::time::sleep(interval).await;
         if sync_round(&state, &peer, &send).await.is_err() {
             return;
         }
+        tokio::time::sleep(interval).await;
     }
 }
 
