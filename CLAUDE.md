@@ -18,10 +18,16 @@ denormalized metadata, tantivy search, and P2P sync over an iroh mesh
 (`kiem-sync`: ticket pairing, LAN + cross-network with relay fallback). The CLI
 does CRUD + a sync daemon. The macOS app does CRUD, tags, smart
 filters, full-text search, trash/restore, a formatting toolbar (over the Pulp editor),
-and background P2P sync. Roadmap (`docs/plans/`) tracks units U1–U17: U1–U8 and U12 are
-done; remaining are live-sync→editor refresh (U10), identity/DIDs (U11), sync-status UI
-(U13), full CLI flags (U14), MCP (U15), and the iOS Pulp port. Identity is still a
-`"local"` placeholder.
+and background P2P sync. Identity is the device's iroh `EndpointId` (stamped as
+`author_did` on new notes; U11's DIDs and U17's cross-network spike were superseded by
+the iroh migration). Remaining roadmap units — tracked in the Kiem "Roadmap" note
+(proj/kiem_app), not in repo files: live-sync→editor refresh (U10), sync-status UI
+(U13), full CLI flags (U14), MCP (U15), skills setup (U16), and the iOS Pulp port.
+
+**Toolchain baseline (since v0.1.0-alpha.11):** macOS 26 deployment target, Swift 6
+language mode, Pulp is TextKit 2-native. Releases build on the `macos-26` runner and
+check out Pulp at the commit pinned in `pulp.ref` — bump that file (and push pulp main)
+whenever a release should pick up new Pulp work.
 
 ## Commands
 
