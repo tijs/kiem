@@ -32,12 +32,19 @@ struct NoteListView: View {
                             ForEach(todoGroups) { group in
                                 // Subtle per-source divider: the list still reads
                                 // as one flat todo list, just annotated with which
-                                // plan/doc each run of todos came from.
-                                Text(todoSourceTitle(group.noteId))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 4)
-                                    .selectionDisabled()
+                                // plan/doc each run of todos came from. Tapping it
+                                // opens that note.
+                                Button {
+                                    model.selectedNoteID = group.noteId
+                                } label: {
+                                    Text(todoSourceTitle(group.noteId))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.top, 4)
+                                .help("Open note")
+                                .selectionDisabled()
                                 ForEach(group.todos, id: \.self) { todo in
                                     ProjectTodoRow(todo: todo) {
                                         model.toggleProjectTodo(
