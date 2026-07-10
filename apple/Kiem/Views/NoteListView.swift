@@ -29,11 +29,21 @@ struct NoteListView: View {
                 List(selection: $model.selectedNoteID) {
                     if model.isViewingProject && !model.projectTodos.isEmpty {
                         Section("Open todos") {
-                            ForEach(model.projectTodos, id: \.self) { todo in
-                                ProjectTodoRow(todo: todo) {
-                                    model.toggleProjectTodo(
-                                        noteID: todo.noteId, index: todo.index, checked: true
-                                    )
+                            ForEach(todoGroups) { group in
+                                // Subtle per-source divider: the list still reads
+                                // as one flat todo list, just annotated with which
+                                // plan/doc each run of todos came from.
+                                Text(todoSourceTitle(group.noteId))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 4)
+                                    .selectionDisabled()
+                                ForEach(group.todos, id: \.self) { todo in
+                                    ProjectTodoRow(todo: todo) {
+                                        model.toggleProjectTodo(
+                                            noteID: todo.noteId, index: todo.index, checked: true
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -57,6 +67,26 @@ struct NoteListView: View {
             }
         }
         .searchable(text: $model.searchText, prompt: "Search notes")
+    }
+
+    /// Open todos chunked into runs by source note, preserving store order
+    /// (notes by recency, todos in document order — the store already returns
+    /// them contiguously per note, so this is a single grouping pass).
+    private var todoGroups: [TodoGroup] {
+        var groups: [TodoGroup] = []
+        for todo in model.projectTodos {
+            if let last = groups.indices.last, groups[last].noteId == todo.noteId {
+                groups[last].todos.append(todo)
+            } else {
+                groups.append(TodoGroup(noteId: todo.noteId, todos: [todo]))
+            }
+        }
+        return groups
+    }
+
+    private func todoSourceTitle(_ noteId: String) -> String {
+        let title = model.notes.first { $0.id == noteId }?.title ?? ""
+        return title.isEmpty ? "Untitled" : title
     }
 
     /// Project notes grouped by `noteType`, known kinds first (in `typeTitles`
@@ -106,6 +136,14 @@ private struct NoteSection: Identifiable {
     let notes: [NoteMetadata]
     var id: String {
         title
+    }
+}
+
+private struct TodoGroup: Identifiable {
+    let noteId: String
+    var todos: [ProjectTodo]
+    var id: String {
+        noteId
     }
 }
 
