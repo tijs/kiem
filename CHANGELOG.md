@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.11 - 2026-07-10
 
 - Fixed: the recurring "tap a note, the editor shows nothing" bug for real this time. Root cause was in the Pulp editor, not Kiem: the editor's text view could come up zero points wide (created at `.zero` with no width tracking), so the note laid out in an invisible column while the text was present all along. The alpha.4/alpha.7 window-restoration fixes and the alpha.9 refresh guard were different bugs with the same symptom; this one is fixed at the source in Pulp, with regression tests.
 - Changed: Pulp's editor is now TextKit 2-native (`NSTextLayoutManager`); the dead TextKit 1 layout-manager subclass is deleted.
