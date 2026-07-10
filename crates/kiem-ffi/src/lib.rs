@@ -187,6 +187,12 @@ impl KiemStore {
         self.with(|store, _| Ok(store.purge_deleted()? as u32))
     }
 
+    /// Permanently erase a project: every note carrying `tag` (trashed ones
+    /// included), tombstoned like `purge_deleted`. Returns the erased count.
+    pub fn purge_tag(&self, tag: String) -> Result<u32, KiemError> {
+        self.with(|store, _| Ok(store.purge_tag(&tag)? as u32))
+    }
+
     /// Toggle the checkbox at `index` within note `note_id`, persisting the edit.
     pub fn set_todo_checked(
         &self,

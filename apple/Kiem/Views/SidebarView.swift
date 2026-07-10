@@ -45,6 +45,11 @@ struct SidebarView: View {
                             count: Int(entry.count)
                         )
                         .tag(SidebarSelection.project(entry.tag))
+                        .contextMenu {
+                            Button("Delete Project…", role: .destructive) {
+                                model.projectAwaitingDeletion = entry.tag
+                            }
+                        }
                     }
                 }
             }

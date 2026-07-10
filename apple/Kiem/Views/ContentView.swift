@@ -57,6 +57,24 @@ struct ContentView: View {
         } message: {
             Text("This can’t be undone.")
         }
+        // Raised from the sidebar's project context menu.
+        .confirmationDialog(
+            "Delete this project?",
+            isPresented: Binding(
+                get: { model.projectAwaitingDeletion != nil },
+                set: { if !$0 { model.projectAwaitingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: model.projectAwaitingDeletion
+        ) { tag in
+            Button("Delete “\(KiemModel.projectName(tag))” and All Its Notes", role: .destructive) {
+                model.deleteProject(tag: tag)
+            }
+        } message: { _ in
+            Text(
+                "Permanently erases the project and every note in it — including any in the Trash. This can’t be undone."
+            )
+        }
         .alert(
             "Something went wrong",
             isPresented: Binding(

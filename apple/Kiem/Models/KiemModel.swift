@@ -73,6 +73,20 @@ final class KiemModel {
         refresh()
     }
 
+    /// The project tag a "Delete Project…" asked to purge; drives the shared
+    /// confirmation dialog in ContentView.
+    var projectAwaitingDeletion: String?
+
+    /// Permanently erase a project and every note tagged into it (trashed
+    /// ones included), with the same sync-safe tombstoning as Empty Trash.
+    func deleteProject(tag: String) {
+        report { try store.purgeTag(tag: tag) }
+        if selection == .project(tag) {
+            selection = .allNotes
+        }
+        refresh()
+    }
+
     /// Empty-list heading for the current selection.
     var emptyNotesTitle: String {
         if !searchText.isEmpty { return "No matches for “\(searchText)”" }

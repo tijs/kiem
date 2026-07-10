@@ -294,16 +294,37 @@ impl NoteStore {
             let rows = stmt.query_map([], |row| row.get(0))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
+        self.purge_ids(&ids)
+    }
+
+    /// Permanently erase a project: every note carrying `tag` — trashed ones
+    /// included — is deleted and tombstoned, exactly like
+    /// [`purge_deleted`](Self::purge_deleted). Returns how many notes were
+    /// erased. A note tagged into several projects is erased with the one
+    /// being deleted.
+    pub fn purge_tag(&mut self, tag: &str) -> Result<usize, StoreError> {
+        let ids: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT id FROM notes
+                 WHERE EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE json_each.value = ?1)",
+            )?;
+            let rows = stmt.query_map(params![tag], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        self.purge_ids(&ids)
+    }
+
+    /// Shared permanent-erase machinery: tombstone + delete rows in one
+    /// transaction, then drop any search-index entries.
+    fn purge_ids(&mut self, ids: &[String]) -> Result<usize, StoreError> {
         let tx = self.conn.transaction()?;
-        for id in &ids {
+        for id in ids {
             tx.execute("INSERT OR IGNORE INTO purged (id) VALUES (?1)", params![id])?;
+            tx.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
         }
-        tx.execute("DELETE FROM notes WHERE deleted = 1", [])?;
         tx.commit()?;
         if let Some(index) = &mut self.search {
-            // Soft delete already unindexed them; this is defensive so a purge
-            // can never leave a ghost hit behind.
-            for id in &ids {
+            for id in ids {
                 index.remove_note(id)?;
             }
         }

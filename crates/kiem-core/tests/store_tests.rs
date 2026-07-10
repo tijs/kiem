@@ -271,6 +271,27 @@ fn sync_until_converged(
 }
 
 #[test]
+fn purge_tag_erases_the_whole_project_including_trashed_and_spares_others() {
+    let mut store = store_with(&[
+        note("x1", "# X home #proj/x", "2026-06-28T10:00:00Z"),
+        note("x2", "# X note #proj/x", "2026-06-28T11:00:00Z"),
+        note("x3", "# X trashed #proj/x", "2026-06-28T12:00:00Z"),
+        note("y1", "# Y note #proj/y", "2026-06-28T13:00:00Z"),
+    ]);
+    store.delete_note("x3").unwrap();
+
+    assert_eq!(store.purge_tag("proj/x").unwrap(), 3);
+
+    assert!(store.list_by_tag("proj/x").unwrap().is_empty());
+    assert!(store.get_note("x1").unwrap().is_none());
+    assert!(store.get_note("x3").unwrap().is_none(), "trashed project note purged too");
+    assert!(store.list_deleted().unwrap().is_empty());
+    // The other project is untouched, and the project tag is gone entirely.
+    assert_eq!(store.list_by_tag("proj/y").unwrap().len(), 1);
+    assert!(store.list_tags().unwrap().iter().all(|(tag, _)| tag != "proj/x"));
+}
+
+#[test]
 fn open_todo_items_aggregate_across_all_live_notes() {
     let mut store = store_with(&[
         note("a", "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2", "2026-06-28T10:00:00Z"),
