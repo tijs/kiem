@@ -38,7 +38,11 @@ final class KiemUITests: XCTestCase {
     /// editor first — after ⌘N the editor deliberately doesn't steal key
     /// focus, so typing without the click would go to the list.
     private func createNote(_ app: XCUIApplication, body: String) {
-        app.buttons["New Note"].firstMatch.click()
+        // First launch can take a while to bind sync and open the store, so
+        // wait for the toolbar rather than assuming it's up immediately.
+        let newNote = app.buttons["New Note"].firstMatch
+        XCTAssertTrue(newNote.waitForExistence(timeout: 30), "app did not reach the main window")
+        newNote.click()
         let editor = app.textViews.firstMatch
         XCTAssertTrue(editor.waitForExistence(timeout: 5), "editor did not appear after New Note")
         editor.click()
@@ -102,6 +106,37 @@ final class KiemUITests: XCTestCase {
         XCTAssertFalse(
             app.buttons["Move “Confirm delete me” to Trash"].exists,
             "⌘⌫ must not raise a confirmation dialog"
+        )
+    }
+
+    /// Pairing moved out of the toolbar into Settings (⌘,). The Sync pane must
+    /// render this Mac's code (QR + copyable string, once the relay hint loads)
+    /// and switch to the Add-a-device panel — and pairing must NOT be in the
+    /// main toolbar anymore.
+    func testSyncSettingsPaneRendersPairingUI() {
+        let app = launchApp()
+        XCTAssertTrue(app.buttons["New Note"].firstMatch.waitForExistence(timeout: 30), "app did not reach the main window")
+
+        // Pairing setup must not clutter the main window.
+        XCTAssertFalse(app.buttons["Add Device"].exists, "pairing should live in Settings, not the toolbar")
+
+        // Open Settings → Sync pane.
+        app.typeKey(",", modifierFlags: .command)
+
+        // "Copy code" appears only after the ticket loads (which waits briefly
+        // for a relay hint), so give it room.
+        let copyCode = app.buttons["Copy code"].firstMatch
+        XCTAssertTrue(
+            copyCode.waitForExistence(timeout: 25),
+            "Sync pane did not show this Mac's pairing code"
+        )
+
+        // Switching to Add wires up the paste panel. A SwiftUI segmented picker
+        // surfaces its segments as radio buttons on macOS.
+        app.radioButtons["Add a device"].firstMatch.click()
+        XCTAssertTrue(
+            app.buttons["Add device"].firstMatch.waitForExistence(timeout: 5),
+            "Add-a-device panel did not appear"
         )
     }
 
