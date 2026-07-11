@@ -29,6 +29,17 @@ final class KiemModel {
     /// Ids of every paired device (reachable or not) — the denominator for
     /// the sync-status indicator.
     private(set) var knownPeers: [String] = []
+
+    // MARK: Pairing (the Sync settings pane)
+
+    /// This device's shareable ticket, loaded when the Sync settings pane opens.
+    private(set) var pairingTicket: String?
+    /// Whole seconds left on the open pairing window, or nil when closed —
+    /// drives the "Ready to pair" countdown.
+    private(set) var pairingWindowRemaining: Int?
+    /// A pending incoming pairing awaiting the user's Allow/Deny.
+    var pairingRequest: PairingRequest?
+
     var errorMessage: String?
     /// Watches `kiem.db`/`kiem.db-wal` for writes from outside our own mutation
     /// calls (an external `kiem` CLI process, or incoming P2P sync). See
@@ -173,17 +184,29 @@ final class KiemModel {
     /// shared SQLite store, where the DB watcher picks them up for the UI.
     private func startSync() {
         knownPeers = (try? store.knownPeers()) ?? []
-        let events = SyncPeerEvents { [weak self] peerId, connected in
-            Task { @MainActor in
-                guard let self else { return }
-                var peers = Set(self.connectedPeers)
-                if connected { peers.insert(peerId) } else { peers.remove(peerId) }
-                self.connectedPeers = peers.sorted()
-                // Pairing happens through the CLI; a newly-trusted peer
-                // connecting is the natural moment to re-read the roster.
-                self.knownPeers = (try? self.store.knownPeers()) ?? []
+        let events = SyncPeerEvents(
+            onChange: { [weak self] peerId, connected in
+                Task { @MainActor in
+                    guard let self else { return }
+                    var peers = Set(self.connectedPeers)
+                    if connected { peers.insert(peerId) } else { peers.remove(peerId) }
+                    self.connectedPeers = peers.sorted()
+                    // A newly-trusted peer connecting is the natural moment to
+                    // re-read the roster.
+                    self.knownPeers = (try? self.store.knownPeers()) ?? []
+                }
+            },
+            onApprove: { [weak self] peerId in
+                // Called on a Rust blocking thread; block it until the user
+                // answers the Allow/Deny prompt we raise on the main actor.
+                guard let self else { return false }
+                let gate = ApprovalGate()
+                Task { @MainActor in
+                    self.requestPairingApproval(peerId: peerId, gate: gate)
+                }
+                return gate.wait()
             }
-        }
+        )
         let store = self.store
         // Off the main actor: binding the endpoint touches the network.
         Task.detached {
@@ -192,6 +215,75 @@ final class KiemModel {
             } catch {
                 debugPrint("kiem sync failed to start: \(error)")
             }
+        }
+    }
+
+    /// The pairing window's length. Long enough to walk to the other device,
+    /// short enough that a leaked code goes stale quickly.
+    private static let pairingWindowSecs: UInt64 = 120
+
+    /// Arms (or re-arms) the pairing window and (re)loads this device's ticket
+    /// — which briefly waits for a relay hint, so it runs off the main actor.
+    /// Called when the Sync settings pane appears.
+    func armPairingWindow() {
+        store.armPairing(windowSecs: Self.pairingWindowSecs)
+        pairingWindowRemaining = Int(Self.pairingWindowSecs)
+        let store = self.store
+        Task.detached {
+            let ticket = try? store.pairTicket()
+            await MainActor.run { self.pairingTicket = ticket }
+        }
+    }
+
+    /// Closes the pairing window (arming for 0s expires it) — called when the
+    /// Sync settings pane goes away, so we stop accepting new devices.
+    func closePairingWindow() {
+        pairingTicket = nil
+        pairingWindowRemaining = nil
+        store.armPairing(windowSecs: 0)
+    }
+
+    /// Re-reads the countdown; the Pair sheet calls this once a second.
+    func refreshPairingWindow() {
+        pairingWindowRemaining = store.pairingWindowRemaining().map(Int.init)
+    }
+
+    /// Trusts and dials the device behind a pasted/scanned ticket.
+    func addDevice(ticket: String) {
+        let trimmed = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let store = self.store
+        Task.detached {
+            do {
+                _ = try store.addKnownPeer(ticket: trimmed)
+                await MainActor.run {
+                    self.knownPeers = (try? self.store.knownPeers()) ?? []
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Couldn't add that device. Check the code and try again."
+                }
+            }
+        }
+    }
+
+    /// Records an incoming pairing awaiting the user's decision. Only one prompt
+    /// shows at a time; a second concurrent request is auto-denied.
+    func requestPairingApproval(peerId: String, gate: ApprovalGate) {
+        guard pairingRequest == nil else {
+            gate.resolve(false)
+            return
+        }
+        pairingRequest = PairingRequest(peerId: peerId, gate: gate)
+    }
+
+    /// Answers the pending pairing prompt, unblocking the waiting sync thread.
+    func resolvePairing(_ allow: Bool) {
+        guard let request = pairingRequest else { return }
+        pairingRequest = nil
+        request.gate.resolve(allow)
+        if allow {
+            knownPeers = (try? store.knownPeers()) ?? []
         }
     }
 
@@ -462,13 +554,50 @@ final class KiemModel {
     }
 }
 
-/// Bridges `kiem-sync` mesh callbacks (arriving on Rust threads) to one
-/// Sendable closure; the model hops them onto the main actor.
+/// A pending incoming pairing shown to the user as Allow/Deny. Holds the
+/// `ApprovalGate` the sync thread is blocked on until they decide.
+struct PairingRequest: Identifiable {
+    let id = UUID()
+    let peerId: String
+    let gate: ApprovalGate
+
+    /// A short, human-glanceable form of the device id for the prompt.
+    var shortPeerId: String {
+        String(peerId.prefix(12))
+    }
+}
+
+/// Blocks the Rust `approve_pairing` thread until the UI resolves it. The
+/// semaphore provides the happens-before edge, so the unsynchronized `result`
+/// is safe to write-then-signal / wait-then-read.
+final class ApprovalGate: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var result = false
+
+    func resolve(_ allow: Bool) {
+        result = allow
+        semaphore.signal()
+    }
+
+    func wait() -> Bool {
+        semaphore.wait()
+        return result
+    }
+}
+
+/// Bridges `kiem-sync` mesh callbacks (arriving on Rust threads) to Sendable
+/// closures; the model hops them onto the main actor. `onApprove` runs on a
+/// blocking sync thread and returns the user's decision (see `ApprovalGate`).
 private final class SyncPeerEvents: PeerEvents {
     private let onChange: @Sendable (_ peerId: String, _ connected: Bool) -> Void
+    private let onApprove: @Sendable (_ peerId: String) -> Bool
 
-    init(onChange: @escaping @Sendable (_ peerId: String, _ connected: Bool) -> Void) {
+    init(
+        onChange: @escaping @Sendable (_ peerId: String, _ connected: Bool) -> Void,
+        onApprove: @escaping @Sendable (_ peerId: String) -> Bool
+    ) {
         self.onChange = onChange
+        self.onApprove = onApprove
     }
 
     func onConnected(peerId: String) {
@@ -477,5 +606,9 @@ private final class SyncPeerEvents: PeerEvents {
 
     func onDisconnected(peerId: String) {
         onChange(peerId, false)
+    }
+
+    func approvePairing(peerId: String) -> Bool {
+        onApprove(peerId)
     }
 }

@@ -69,6 +69,17 @@ struct KiemApp: App {
                 }
             }
         }
+
+        // Sync + device pairing lives in Settings (⌘,) — it's a rare, deliberate
+        // action that doesn't belong in the main window's chrome.
+        Settings {
+            if let model {
+                SyncSettingsView(model: model)
+            } else {
+                Text("Kiem is still starting…")
+                    .frame(width: 300, height: 120)
+            }
+        }
     }
 
     private func start() {

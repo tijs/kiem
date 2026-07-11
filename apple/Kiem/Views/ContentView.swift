@@ -21,9 +21,6 @@ struct ContentView: View {
         // again in the window title bar is redundant chrome.
         .navigationTitle("Kiem")
         .toolbar {
-            ToolbarItem {
-                SyncStatusView(model: model)
-            }
             ToolbarItem(placement: .primaryAction) {
                 Button("New Project", systemImage: "folder.badge.plus") {
                     newProjectName = ""
@@ -37,6 +34,22 @@ struct ContentView: View {
                 }
                 .keyboardShortcut("n", modifiers: .command)
             }
+        }
+        // An incoming device is asking to pair — the sync thread is blocked on
+        // this answer. Dismissing without choosing denies (safe default).
+        .confirmationDialog(
+            "Pair this device?",
+            isPresented: Binding(
+                get: { model.pairingRequest != nil },
+                set: { if !$0 { model.resolvePairing(false) } }
+            ),
+            titleVisibility: .visible,
+            presenting: model.pairingRequest
+        ) { request in
+            Button("Allow") { model.resolvePairing(true) }
+            Button("Don’t Allow", role: .cancel) { model.resolvePairing(false) }
+        } message: { request in
+            Text("A device (\(request.shortPeerId)…) wants to pair and sync your notes. Only allow devices you recognize.")
         }
         .alert("New Project", isPresented: $showingNewProject) {
             TextField("Project name", text: $newProjectName)
