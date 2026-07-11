@@ -146,10 +146,16 @@ pub enum TodoAction {
 
 #[derive(Subcommand)]
 pub enum NoteAction {
-    /// Add a note to the current project (tags it proj/<slug>)
+    /// Add a note to the current project (tags it proj/<slug>). Body from the
+    /// positional arg, --file, or stdin — prefer --file/stdin for markdown with
+    /// backticks or $(...), which a shell mangles inside a quoted argument.
     Add {
-        /// Note text; the first line becomes the title
-        text: String,
+        /// Note text; the first line becomes the title. Omit to use --file or stdin.
+        text: Option<String>,
+        /// Read the note body from a file instead of the positional arg (safe for
+        /// markdown containing shell metacharacters).
+        #[arg(long)]
+        file: Option<PathBuf>,
         /// Override the resolved project (a name or proj/<slug>)
         #[arg(long)]
         project: Option<String>,

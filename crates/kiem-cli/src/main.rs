@@ -280,7 +280,14 @@ fn run() -> Result<()> {
             }
         }
         Command::Note { action } => match action {
-            NoteAction::Add { text, project: project_override, note_type } => {
+            NoteAction::Add { text, file, project: project_override, note_type } => {
+                let text = match (text, file) {
+                    (Some(t), _) => t,
+                    (None, Some(path)) => std::fs::read_to_string(&path)
+                        .with_context(|| format!("reading note body from {}", path.display()))?,
+                    (None, None) => read_stdin()
+                        .context("provide note text, --file <path>, or pipe content on stdin")?,
+                };
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let tag = project::resolve(&cwd, project_override.as_deref())?;
                 // Only auto-append the project tag if the text doesn't already
