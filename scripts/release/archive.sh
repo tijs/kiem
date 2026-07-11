@@ -33,6 +33,13 @@ archive_args=(
   -configuration "$CONFIGURATION" \
   -destination "generic/platform=macOS" \
   -archivePath "$ARCHIVE_PATH" \
+  # Every package (KiemKit, Pulp) is a local path reference — nothing to fetch.
+  # Without this, xcodebuild can wedge indefinitely in
+  # waitForRemoteSourcePackagesToFinishLoading, waiting on "remote" packages
+  # that don't exist (hit on local machines with stale DerivedData; a clean CI
+  # checkout dodges it). Skipping automatic resolution is safe with all-local
+  # packages and cuts the hang out entirely.
+  -disableAutomaticPackageResolution \
   CODE_SIGN_STYLE="$CODE_SIGN_STYLE"
 )
 
