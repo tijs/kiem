@@ -5,7 +5,9 @@ use iroh::{
 
 /// ALPN identifying kiem's sync protocol. Bumped only on a wire-incompatible
 /// change to what's carried over the stream (see `session.rs`'s frame format).
-pub const ALPN: &[u8] = b"kiem-sync/0";
+/// `/1` added the pairing prelude (each side sends its ticket before syncing),
+/// so a `/1` peer and a `/0` peer can't (and must not) connect.
+pub const ALPN: &[u8] = b"kiem-sync/1";
 
 #[derive(thiserror::Error, Debug)]
 pub enum EndpointError {

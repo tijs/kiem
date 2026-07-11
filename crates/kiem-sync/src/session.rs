@@ -14,13 +14,31 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iroh::endpoint::{Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError};
+use iroh::EndpointAddr;
 use kiem_core::store::NoteStore;
 use kiem_core::sync::{SyncEngine, SyncError};
+
+use crate::peers;
 
 /// Note ids are UUIDs today; leave generous headroom.
 const MAX_DOC_ID_LEN: u32 = 1024;
 /// A full document snapshot travels inside one sync message.
 const MAX_PAYLOAD_LEN: u32 = 64 * 1024 * 1024;
+
+/// Reserved frame marker for the pairing prelude — each side's first frame
+/// carries its own `EndpointTicket` under this id so trust reciprocates in a
+/// single connection. The `_kiem/` prefix keeps it clear of note UUIDs.
+const PAIRING_HELLO: &str = "_kiem/pair";
+
+/// Per-connection pairing handshake. `local_ticket` is this device's shareable
+/// ticket (sent first thing on every connection); `on_peer` records the peer's
+/// address into the trust list once, after it's been checked against the
+/// iroh-authenticated peer id. One connect ⇒ both sides trust each other.
+#[derive(Clone)]
+pub struct PeerHandshake {
+    pub local_ticket: String,
+    pub on_peer: Arc<dyn Fn(EndpointAddr) + Send + Sync>,
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum SessionError {
@@ -52,13 +70,32 @@ pub async fn run(
     dialed: bool,
     state: SharedState,
     interval: Duration,
+    handshake: PeerHandshake,
 ) -> Result<(), SessionError> {
-    let peer = connection.remote_id().to_string();
-    let (send, mut recv) = if dialed {
+    let peer_id = connection.remote_id();
+    let peer = peer_id.to_string();
+    let (mut send, mut recv) = if dialed {
         connection.open_bi().await?
     } else {
         connection.accept_bi().await?
     };
+
+    // Pairing prelude: send our own ticket first, then read the peer's. The
+    // dialer's write is also what opens the lazily-created QUIC stream and lets
+    // the acceptor's accept_bi complete. We record the peer's address only if
+    // the ticket's id matches the id iroh already authenticated on this
+    // connection — so a peer can't push someone else's address into our trust
+    // list.
+    write_frame(&mut send, PAIRING_HELLO, handshake.local_ticket.as_bytes()).await?;
+    let (marker, payload) = read_frame(&mut recv).await?;
+    if marker == PAIRING_HELLO {
+        if let Ok(addr) = peers::parse_ticket(&String::from_utf8_lossy(&payload)) {
+            if addr.id == peer_id {
+                (handshake.on_peer)(addr);
+            }
+        }
+    }
+
     let send = Arc::new(tokio::sync::Mutex::new(send));
 
     let ticker = tokio::spawn(ticker_loop(

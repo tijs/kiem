@@ -24,11 +24,16 @@ uniffi::setup_scaffolding!();
 mod records;
 pub use records::*;
 
-/// Forwarded to Swift as sync mesh peers connect/disconnect.
+/// Forwarded to Swift as sync mesh peers connect/disconnect, and to ask the
+/// user to approve an incoming pairing.
 #[uniffi::export(with_foreign)]
 pub trait PeerEvents: Send + Sync {
     fn on_connected(&self, peer_id: String);
     fn on_disconnected(&self, peer_id: String);
+    /// An unknown peer dialed in during an open pairing window — return true to
+    /// trust it. Called on a blocking thread, so the Swift side may wait on a
+    /// user prompt (e.g. a semaphore released by an Allow/Deny sheet).
+    fn approve_pairing(&self, peer_id: String) -> bool;
 }
 
 struct EventsAdapter(Arc<dyn PeerEvents>);
@@ -42,6 +47,9 @@ impl kiem_sync::MeshEvents for EventsAdapter {
     }
     fn on_error(&self, context: &str, error: &str) {
         eprintln!("kiem sync: {context}: {error}");
+    }
+    fn approve_pairing(&self, peer: kiem_sync::EndpointId) -> bool {
+        self.0.approve_pairing(peer.to_string())
     }
 }
 
@@ -253,20 +261,58 @@ impl KiemStore {
         }
     }
 
-    /// This device's shareable pairing ticket.
+    /// This device's shareable pairing ticket, with a relay hint so the peer's
+    /// first connect goes through the relay instead of paying cold discovery.
+    /// When sync is running it's the live mesh endpoint's ticket; otherwise a
+    /// standalone one. Both wait (bounded) for relay registration, so call this
+    /// off the main thread.
     pub fn pair_ticket(&self) -> Result<String, KiemError> {
-        tokio::runtime::Runtime::new()
-            .map_err(sync_err)?
-            .block_on(kiem_sync::pair_ticket(&self.data_dir))
-            .map_err(sync_err)
+        // Clone out the mesh Arc so the bounded relay wait doesn't hold the
+        // sync lock (the sync-status UI reads it too).
+        let mesh = self
+            .sync
+            .lock()
+            .expect("sync lock poisoned")
+            .as_ref()
+            .map(|handle| handle.mesh.clone());
+        let runtime = tokio::runtime::Runtime::new().map_err(sync_err)?;
+        match mesh {
+            Some(mesh) => Ok(runtime.block_on(mesh.ticket_online())),
+            None => runtime
+                .block_on(kiem_sync::pair_ticket(&self.data_dir))
+                .map_err(sync_err),
+        }
     }
 
-    /// Trusts the device behind a pasted/scanned ticket, dialing it right
-    /// away if sync is already running.
+    /// Opens the single-use pairing window for `window_secs`, during which one
+    /// unknown peer may connect and (after approval) be trusted. No-op if sync
+    /// isn't running.
+    pub fn arm_pairing(&self, window_secs: u64) {
+        if let Some(handle) = self.sync.lock().expect("sync lock poisoned").as_ref() {
+            handle.mesh.arm_pairing(std::time::Duration::from_secs(window_secs));
+        }
+    }
+
+    /// Whole seconds left on the open pairing window (rounded up), or `None`
+    /// when closed — drives the app's countdown.
+    pub fn pairing_window_remaining(&self) -> Option<u64> {
+        let handle = self.sync.lock().expect("sync lock poisoned");
+        handle
+            .as_ref()?
+            .mesh
+            .pairing_window_remaining()
+            .map(|d| d.as_secs() + u64::from(d.subsec_nanos() > 0))
+    }
+
+    /// Trusts the device behind a pasted/scanned ticket. If sync is running,
+    /// forces an immediate pairing dial (bypassing the smaller-id-dials guard so
+    /// it connects regardless of id ordering) and also starts the steady-state
+    /// dial loop for ongoing reconnection.
     pub fn add_known_peer(&self, ticket: String) -> Result<String, KiemError> {
         let addr = kiem_sync::pair_add(&self.data_dir, &ticket).map_err(sync_err)?;
         let id = addr.id;
         if let Some(handle) = self.sync.lock().expect("sync lock poisoned").as_ref() {
+            handle.mesh.pair_dial(addr.clone());
             handle.mesh.dial(addr);
         }
         Ok(id.to_string())
@@ -386,6 +432,9 @@ mod tests {
     impl PeerEvents for NullEvents {
         fn on_connected(&self, _peer_id: String) {}
         fn on_disconnected(&self, _peer_id: String) {}
+        fn approve_pairing(&self, _peer_id: String) -> bool {
+            true
+        }
     }
 
     #[test]

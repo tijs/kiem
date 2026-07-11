@@ -41,12 +41,32 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
             ))
             .unwrap();
 
+        // Each side records the peer it saw during the pairing prelude, so the
+        // test can assert one connection makes trust reciprocal (unit 1).
+        let (a_id, b_id) = (a_ep.id(), b_ep.id());
+        let a_seen: Arc<Mutex<Vec<kiem_sync::EndpointId>>> = Arc::new(Mutex::new(Vec::new()));
+        let b_seen: Arc<Mutex<Vec<kiem_sync::EndpointId>>> = Arc::new(Mutex::new(Vec::new()));
+        let a_handshake = kiem_sync::PeerHandshake {
+            local_ticket: kiem_sync::my_ticket(&a_ep).to_string(),
+            on_peer: {
+                let seen = a_seen.clone();
+                Arc::new(move |addr| seen.lock().unwrap().push(addr.id))
+            },
+        };
+        let b_handshake = kiem_sync::PeerHandshake {
+            local_ticket: kiem_sync::my_ticket(&b_ep).to_string(),
+            on_peer: {
+                let seen = b_seen.clone();
+                Arc::new(move |addr| seen.lock().unwrap().push(addr.id))
+            },
+        };
+
         let accept_task = tokio::spawn({
             let b_ep = b_ep.clone();
             let b_state = b_state.clone();
             async move {
                 let conn = kiem_sync::accept(&b_ep).await.unwrap().unwrap();
-                kiem_sync::run_session(conn, false, b_state, Duration::from_millis(20)).await
+                kiem_sync::run_session(conn, false, b_state, Duration::from_millis(20), b_handshake).await
             }
         });
 
@@ -56,6 +76,7 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
             true,
             a_state.clone(),
             Duration::from_millis(20),
+            a_handshake,
         ));
 
         let mut synced = false;
@@ -70,6 +91,15 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
         accept_task.abort();
         connect_task.abort();
         assert!(synced, "note did not sync from A to B over the iroh connection");
+        // One connection paired both directions: each side recorded the other.
+        assert!(
+            a_seen.lock().unwrap().contains(&b_id),
+            "A did not record B from the pairing prelude"
+        );
+        assert!(
+            b_seen.lock().unwrap().contains(&a_id),
+            "B did not record A from the pairing prelude"
+        );
     })
     .await;
 

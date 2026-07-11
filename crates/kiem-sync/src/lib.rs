@@ -14,4 +14,4 @@ pub use identity::{device_id, load_or_create, IdentityError};
 pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 pub use mesh::{pair_add, pair_ticket, Mesh, MeshError, MeshEvents, NoEvents, PEERS_FILE};
 pub use peers::{my_ticket, parse_ticket, KnownPeers, PeersError};
-pub use session::{run as run_session, SessionError, SharedState};
+pub use session::{run as run_session, PeerHandshake, SessionError, SharedState};
