@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0-alpha.14 - 2026-07-12
+
+- Added: device pairing UI — Settings (⌘,) now has a Sync pane. "Show this Mac" arms a single-use 2-minute pairing window and shows a QR code plus a copyable code; "Add a device" takes a pasted code. One action pairs both devices: trust is exchanged over the connection itself, so nobody pastes two codes.
+- Added: an accept-side trust gate — an unknown device dialing in is refused outright unless a pairing window is open *and* you allow it in the "Pair this device?" prompt. Previously any device that knew your endpoint id could connect and sync.
+- Added: `kiem pair show` is now arm-and-wait — it prints this device's code, waits for one device to pair, asks for approval at the prompt (`--yes` auto-approves), and exits once paired. `kiem pair add` connects immediately instead of waiting for the next daemon start. With the sync daemon running, both commands drive it through a new control socket (`~/.kiem/control.sock`), which also makes a second `kiem sync` refuse to start instead of racing the first.
+- Added: `kiem note add` reads the note body from `--file <path>` or stdin — safe for markdown with backticks or `$(…)` that a shell mangles inside a quoted argument.
+- Changed: the sync-status indicator moved from the toolbar into the Settings Sync pane — pairing and status are rare, deliberate actions that don't need main-window chrome.
+- Breaking: the sync protocol version is bumped (`kiem-sync/1`) for the pairing handshake — devices only sync with other alpha.14+ installs; update all paired devices together.
+
 ## 0.1.0-alpha.13 - 2026-07-11
 
 - Fixed: ⌘⌫ (instant-trash the selected note) never actually fired — the Command-modified Delete key doesn't reach the list's delete handler. It's now caught by a window-local key monitor that yields to text editors. Plain ⌫ (confirm) was unaffected.
