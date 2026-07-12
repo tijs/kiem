@@ -7,7 +7,9 @@
 //! H1 heading line.
 
 mod args;
+mod control;
 mod daemon;
+mod pair;
 mod project;
 
 use std::io::{IsTerminal, Read};
@@ -52,9 +54,13 @@ fn run() -> Result<()> {
         }
         Command::SyncStatus => return daemon::print_status(&data_dir, cli.json),
         Command::Pair { action } => {
-            return tokio::runtime::Runtime::new()
-                .context("starting async runtime")?
-                .block_on(run_pair(action, &data_dir, cli.json));
+            let runtime = tokio::runtime::Runtime::new().context("starting async runtime")?;
+            return match action {
+                PairAction::Show { yes } => runtime.block_on(pair::show(&data_dir, yes, cli.json)),
+                PairAction::Add { ticket } => {
+                    runtime.block_on(pair::add(&data_dir, &ticket, cli.json))
+                }
+            };
         }
         _ => {}
     }
@@ -334,28 +340,6 @@ fn run() -> Result<()> {
         }
         Command::Sync { .. } | Command::SyncStatus | Command::Pair { .. } => {
             unreachable!("handled above")
-        }
-    }
-    Ok(())
-}
-
-async fn run_pair(action: PairAction, data_dir: &Path, as_json: bool) -> Result<()> {
-    match action {
-        PairAction::Show => {
-            let ticket = daemon::pair_show(data_dir).await?;
-            if as_json {
-                print_json(&json!({"ticket": ticket}))?;
-            } else {
-                println!("{ticket}");
-            }
-        }
-        PairAction::Add { ticket } => {
-            let id = daemon::pair_add(data_dir, &ticket)?;
-            if as_json {
-                print_json(&json!({"added": id.to_string()}))?;
-            } else {
-                println!("added peer {id}");
-            }
         }
     }
     Ok(())

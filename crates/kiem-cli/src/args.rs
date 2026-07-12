@@ -117,9 +117,14 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum PairAction {
-    /// Print this device's shareable ticket; paste/scan it on another device
-    Show,
-    /// Trust the device behind a pasted/scanned ticket
+    /// Show this device's pairing code and wait for one device to pair
+    /// (approve it at the prompt); pairs the running daemon if there is one
+    Show {
+        /// Auto-approve the first device that connects (no prompt)
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Trust the device behind a pasted/scanned code and connect to it now
     Add { ticket: String },
 }
 

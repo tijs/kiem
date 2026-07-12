@@ -12,8 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use kiem_core::store::NoteStore;
 use kiem_core::sync::SyncEngine;
-use kiem_sync::{EndpointId, Mesh, MeshEvents};
+use kiem_sync::Mesh;
 use serde_json::json;
+
+use crate::control::{self, ControlEvents};
 
 pub struct Options {
     pub data_dir: PathBuf,
@@ -21,19 +23,6 @@ pub struct Options {
 }
 
 const STATUS_FILE: &str = "sync-status.json";
-
-struct LogEvents;
-impl MeshEvents for LogEvents {
-    fn on_connected(&self, peer: EndpointId) {
-        eprintln!("kiem sync: connected to peer {peer}");
-    }
-    fn on_disconnected(&self, peer: EndpointId) {
-        eprintln!("kiem sync: peer {peer} disconnected");
-    }
-    fn on_error(&self, context: &str, error: &str) {
-        eprintln!("kiem sync: {context}: {error}");
-    }
-}
 
 pub fn run(opts: Options) -> Result<()> {
     tokio::runtime::Runtime::new()
@@ -46,10 +35,27 @@ async fn run_async(opts: Options) -> Result<()> {
         .with_context(|| format!("opening data directory {}", opts.data_dir.display()))?;
     let state = Arc::new(Mutex::new((store, SyncEngine::new())));
 
-    let mesh = Mesh::start(opts.data_dir.clone(), state, opts.interval, Arc::new(LogEvents))
+    // Bind the control socket before the endpoint: it doubles as the
+    // single-instance lock (two meshes on one identity corrupt discovery).
+    // An un-bindable socket (e.g. a data dir deeper than SUN_LEN allows) must
+    // not take the daemon down — sync still works, only `kiem pair` degrades.
+    let listener = match control::bind(&opts.data_dir).await {
+        Ok(listener) => Some(listener),
+        Err(err) if err.is::<control::AlreadyRunning>() => return Err(err),
+        Err(err) => {
+            eprintln!("kiem sync: {err:#}; running without a control socket — stop the daemon to pair");
+            None
+        }
+    };
+    let events = Arc::new(ControlEvents::default());
+
+    let mesh = Mesh::start(opts.data_dir.clone(), state, opts.interval, events.clone())
         .await
         .context("starting sync mesh")?;
     eprintln!("kiem sync: endpoint {} ready", mesh.endpoint_id());
+    if let Some(listener) = listener {
+        tokio::spawn(control::serve(listener, mesh.clone(), events, opts.data_dir.clone()));
+    }
 
     // Heartbeat: publish status every second, forever.
     loop {
@@ -106,17 +112,6 @@ pub fn print_status(data_dir: &Path, as_json: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// `kiem pair show`: this device's shareable ticket (paste/scan on another
-/// device to add it as a known peer).
-pub async fn pair_show(data_dir: &Path) -> Result<String> {
-    Ok(kiem_sync::pair_ticket(data_dir).await?)
-}
-
-/// `kiem pair add <ticket>`: trust the device behind a pasted/scanned ticket.
-pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointId> {
-    Ok(kiem_sync::pair_add(data_dir, ticket)?.id)
 }
 
 fn epoch_secs() -> u64 {

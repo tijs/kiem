@@ -1,6 +1,7 @@
 //! Two real `kiem sync` daemon processes converging over a real iroh
 //! connection, paired via `kiem pair` tickets instead of LAN discovery.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -44,12 +45,42 @@ fn kiem_json(data_dir: &Path, args: &[&str]) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).expect("valid JSON output")
 }
 
-/// Pairs two devices bidirectionally: each trusts the other's ticket.
+/// Pairs two devices the way a user would: A arms `pair show` and waits, B
+/// runs `pair add` with A's code. One action per side; the reciprocal
+/// handshake records the trust on both — no second add.
 fn pair(dir_a: &Path, dir_b: &Path) {
-    let ticket_a = kiem_json(dir_a, &["pair", "show", "--json"]);
-    let ticket_b = kiem_json(dir_b, &["pair", "show", "--json"]);
-    kiem_json(dir_a, &["pair", "add", "--json", ticket_b["ticket"].as_str().unwrap()]);
-    kiem_json(dir_b, &["pair", "add", "--json", ticket_a["ticket"].as_str().unwrap()]);
+    let mut show = Command::new(kiem_bin())
+        .arg("--data-dir")
+        .arg(dir_a)
+        .args(["pair", "show", "--yes", "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("pair show spawns");
+
+    // The first stdout line is the ticket (printed as soon as it's known;
+    // `show` then keeps waiting for the pairing).
+    let mut ticket_line = String::new();
+    BufReader::new(show.stdout.as_mut().unwrap())
+        .read_line(&mut ticket_line)
+        .expect("pair show prints a ticket");
+    let ticket_json: serde_json::Value = serde_json::from_str(&ticket_line).expect("ticket JSON");
+    let ticket = ticket_json["ticket"].as_str().unwrap();
+
+    let added = kiem_json(dir_b, &["pair", "add", "--json", ticket]);
+    assert_eq!(
+        added["paired"].as_str(),
+        Some(ticket_a_id(dir_a).as_str()),
+        "pair add must report the show side as paired: {added}"
+    );
+
+    let show_out = show.wait_with_output().expect("pair show exits");
+    assert!(show_out.status.success(), "pair show failed after the add");
+}
+
+/// The show side's endpoint id, read from its data dir's persisted identity.
+fn ticket_a_id(dir_a: &Path) -> String {
+    kiem_sync::device_id(dir_a).unwrap().to_string()
 }
 
 fn spawn_daemon(data_dir: &Path) -> DaemonGuard {
