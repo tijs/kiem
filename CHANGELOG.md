@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Changed: in the sidebar's open-todos list, tapping a todo no longer marks it done — only the circle checkbox completes it. Clicking the todo text now edits it in place (Return or click-away saves, Escape cancels).
+- Added: `set_todo_text` in the core/FFI — rename a todo by its (note, index) address through the same sync-safe body-update path as toggling. Line terminators in the new text are collapsed to spaces so a rename can never splice extra lines into the note or shift other todos' indices.
+
 ## 0.1.0-alpha.14 - 2026-07-12
 
 - Added: device pairing UI — Settings (⌘,) now has a Sync pane. "Show this Mac" arms a single-use 2-minute pairing window and shows a QR code plus a copyable code; "Add a device" takes a pasted code. One action pairs both devices: trust is exchanged over the connection itself, so nobody pastes two codes.

@@ -211,6 +211,16 @@ impl KiemStore {
         self.with(|store, _| Ok(store.set_todo_checked(&note_id, index as usize, checked)?.into()))
     }
 
+    /// Replace the text of the todo at `index` within note `note_id`, persisting the edit.
+    pub fn set_todo_text(
+        &self,
+        note_id: String,
+        index: u32,
+        text: String,
+    ) -> Result<NoteMetadata, KiemError> {
+        self.with(|store, _| Ok(store.set_todo_text(&note_id, index as usize, &text)?.into()))
+    }
+
     pub fn search(&self, query: String, limit: u32) -> Result<Vec<SearchResult>, KiemError> {
         self.with(|store, _| {
             Ok(store
@@ -395,6 +405,11 @@ mod tests {
         let after = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].text, "b");
+
+        store.set_todo_text(note.id.clone(), 1, "b renamed".into()).unwrap();
+        let renamed = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].text, "b renamed");
     }
 
     #[test]

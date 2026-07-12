@@ -378,6 +378,15 @@ final class KiemModel {
         if noteID == selectedNoteID { loadSelectedNote() }
     }
 
+    /// Rename a project todo by its (note, index) address and refresh.
+    /// Same clobber guards as `toggleProjectTodo` (see comments there).
+    func updateProjectTodoText(noteID: String, index: UInt32, text: String) {
+        flushPendingEdit()
+        report { try store.setTodoText(noteId: noteID, index: index, text: text) }
+        refresh()
+        if noteID == selectedNoteID { loadSelectedNote() }
+    }
+
     /// Full-text search via the Rust core, mapped back to list metadata with
     /// rank order preserved. Trashed hits drop out — they're not in `listNotes`.
     private func searchResults(matching query: String) throws -> [NoteMetadata] {

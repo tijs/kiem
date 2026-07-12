@@ -463,6 +463,22 @@ impl NoteStore {
         self.update_note(id, &new_body)
     }
 
+    /// Replace the text of the todo at `index` within note `id` and persist.
+    /// Same sync-safe body-update path as [`Self::set_todo_checked`].
+    pub fn set_todo_text(
+        &mut self,
+        id: &str,
+        index: usize,
+        text: &str,
+    ) -> Result<NoteMetadata, StoreError> {
+        let note = self
+            .get_note(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let new_body = content::set_todo_text(note.body.as_str(), index, text)
+            .map_err(|e| document_err(id, e))?;
+        self.update_note(id, &new_body)
+    }
+
     /// Append a new unchecked todo to note `id` and persist. Goes through the
     /// normal body-update path (title/tags/`modified_at` re-derive, splices into
     /// the existing Automerge document), so it is sync-safe like an edit.

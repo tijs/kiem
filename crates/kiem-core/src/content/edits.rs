@@ -34,19 +34,22 @@ pub fn extract_todo_items(body: &str) -> Vec<TodoItem> {
     items
 }
 
-/// Return a copy of `body` with the checkbox at `index` set to `checked`.
+/// Walk `body`'s lines and rewrite the checkbox line at `index` with
+/// `rewrite(line, pos)`, where `pos` is the byte offset of the state char.
 /// Preserves all other text exactly (including line endings). Errors when
 /// `index` addresses no checkbox.
-pub fn set_todo_checked(body: &str, index: usize, checked: bool) -> Result<String, TodoError> {
+fn rewrite_todo_line(
+    body: &str,
+    index: usize,
+    rewrite: impl Fn(&str, usize) -> String,
+) -> Result<String, TodoError> {
     let mut seen = 0usize;
     let mut found = false;
     let mut out: Vec<String> = Vec::new();
     for line in body.split('\n') {
         match parse_checkbox_line(line) {
             Some((pos, _, _)) if seen == index => {
-                let mut new_line = line.to_string();
-                new_line.replace_range(pos..pos + 1, if checked { "x" } else { " " });
-                out.push(new_line);
+                out.push(rewrite(line, pos));
                 found = true;
                 seen += 1;
             }
@@ -62,6 +65,34 @@ pub fn set_todo_checked(body: &str, index: usize, checked: bool) -> Result<Strin
     } else {
         Err(TodoError::IndexOutOfRange { index, count: seen })
     }
+}
+
+/// Return a copy of `body` with the checkbox at `index` set to `checked`.
+pub fn set_todo_checked(body: &str, index: usize, checked: bool) -> Result<String, TodoError> {
+    rewrite_todo_line(body, index, |line, pos| {
+        let mut new_line = line.to_string();
+        new_line.replace_range(pos..pos + 1, if checked { "x" } else { " " });
+        new_line
+    })
+}
+
+/// Return a copy of `body` with the text of the checkbox at `index` replaced,
+/// preserving indentation, checked state, and line endings (text normalizes to
+/// a single space after the marker). Errors when `index` addresses no checkbox.
+pub fn set_todo_text(body: &str, index: usize, text: &str) -> Result<String, TodoError> {
+    // One line must stay one line: a line terminator in the new text would
+    // splice extra lines (even new checkboxes) into the body and shift every
+    // later todo index, so collapse terminators to spaces before trimming.
+    let text = text.replace(['\r', '\n'], " ");
+    let text = trim_horizontal_ws(&text);
+    rewrite_todo_line(body, index, |line, pos| {
+        // `pos` is the byte offset of the state char; `]` follows it. Rebuild
+        // as "<indent>- [x] <text>", re-appending the `\r` the parser
+        // tolerated on CRLF input.
+        let content = line.strip_suffix('\r').unwrap_or(line);
+        let cr = if content.len() < line.len() { "\r" } else { "" };
+        format!("{} {text}{cr}", &content[..pos + 2])
+    })
 }
 
 /// Return a copy of `body` with a new unchecked task-list item appended,
@@ -243,6 +274,25 @@ mod tests {
             set_todo_checked(body, 3, true),
             Err(TodoError::IndexOutOfRange { index: 3, count: 1 })
         );
+    }
+
+    #[test]
+    fn set_text_replaces_only_the_addressed_item_preserving_state() {
+        let body = "# T\n- [ ] a\n  - [x] b\n- [ ] c\r\nprose";
+        let out = set_todo_text(body, 1, "  B renamed ").unwrap();
+        assert_eq!(out, "# T\n- [ ] a\n  - [x] B renamed\n- [ ] c\r\nprose");
+        // CRLF item keeps its line ending and unchecked state; non-ASCII text survives.
+        let out = set_todo_text(&out, 2, "café ☕").unwrap();
+        assert_eq!(out, "# T\n- [ ] a\n  - [x] B renamed\n- [ ] café ☕\r\nprose");
+        assert_eq!(
+            set_todo_text(body, 5, "x"),
+            Err(TodoError::IndexOutOfRange { index: 5, count: 3 })
+        );
+        // Line terminators in the new text collapse to spaces — the item stays
+        // one line, so no new checkbox appears and later indices don't shift.
+        let out = set_todo_text("- [ ] a\n- [ ] b", 0, "x\r\n- [ ] injected").unwrap();
+        assert_eq!(out, "- [ ] x  - [ ] injected\n- [ ] b");
+        assert_eq!(extract_todo_items(&out).len(), 2);
     }
 
     #[test]

@@ -55,6 +55,10 @@ struct NoteListView: View {
                                         model.toggleProjectTodo(
                                             noteID: todo.noteId, index: todo.index, checked: true
                                         )
+                                    } onRename: { text in
+                                        model.updateProjectTodoText(
+                                            noteID: todo.noteId, index: todo.index, text: text
+                                        )
                                     }
                                 }
                             }
@@ -247,18 +251,66 @@ private struct TodoGroup: Identifiable {
     }
 }
 
-/// An open project todo, rendered as a tappable row that completes it.
+/// An open project todo. Only the circle checkbox completes it; clicking the
+/// text edits it in place (Return or click-away commits, Escape cancels).
 private struct ProjectTodoRow: View {
     let todo: ProjectTodo
     let onComplete: () -> Void
+    let onRename: (String) -> Void
+
+    @State private var isEditing = false
+    @State private var draft = ""
+    /// True once focus was actually granted this edit. Only then does focus
+    /// loss mean click-away-commit — a failed macOS focus grant (flaky for a
+    /// conditionally-inserted field in a List) must not cancel edit mode.
+    @State private var sawFocus = false
+    @FocusState private var focused: Bool
 
     var body: some View {
-        Button(action: onComplete) {
-            Label(todo.text.isEmpty ? "(empty todo)" : todo.text, systemImage: "circle")
-                .lineLimit(1)
+        HStack(spacing: 6) {
+            Button(action: onComplete) {
+                Image(systemName: "circle")
+            }
+            .buttonStyle(.plain)
+            .help("Mark done")
+            if isEditing {
+                TextField("Todo", text: $draft)
+                    .textFieldStyle(.plain)
+                    .focused($focused)
+                    .onAppear { focused = true }
+                    .onSubmit(commit)
+                    .onExitCommand { isEditing = false }
+                    .onChange(of: focused) { _, nowFocused in
+                        if nowFocused {
+                            sawFocus = true
+                        } else if sawFocus {
+                            commit()
+                        }
+                    }
+            } else {
+                Text(todo.text.isEmpty ? "(empty todo)" : todo.text)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        draft = todo.text
+                        sawFocus = false
+                        isEditing = true
+                    }
+                    .help("Edit")
+            }
         }
-        .buttonStyle(.plain)
-        .help("Mark done")
+    }
+
+    /// Idempotent: Return fires `onSubmit` and then the focus-loss `onChange`;
+    /// the second call sees `isEditing == false` and no-ops. Escape flips
+    /// `isEditing` off first, so its focus-loss call cancels the same way.
+    private func commit() {
+        guard isEditing else { return }
+        isEditing = false
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, text != todo.text else { return }
+        onRename(text)
     }
 }
 
