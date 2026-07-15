@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added: the project breadcrumb above the editor is now clickable — clicking the project name opens that project's note list, same as selecting it in the sidebar.
 - Changed: in the sidebar's open-todos list, tapping a todo no longer marks it done — only the circle checkbox completes it. Clicking the todo text now edits it in place (Return or click-away saves, Escape cancels).
 - Added: `set_todo_text` in the core/FFI — rename a todo by its (note, index) address through the same sync-safe body-update path as toggling. Line terminators in the new text are collapsed to spaces so a rename can never splice extra lines into the note or shift other todos' indices.
 

@@ -39,7 +39,7 @@ struct EditorView: View {
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if let note = model.selectedNote {
-                        MetadataStrip(note: note)
+                        MetadataStrip(note: note) { model.selection = .project($0) }
                     }
                 }
         }
@@ -52,6 +52,7 @@ struct EditorView: View {
 /// body itself would need real TextKit-level work, out of scope here).
 private struct MetadataStrip: View {
     let note: NoteMetadata
+    let openProject: (String) -> Void
 
     private var projectTags: [String] {
         note.tags.filter { $0.hasPrefix(KiemModel.projectTagPrefix) }
@@ -65,7 +66,13 @@ private struct MetadataStrip: View {
         if !projectTags.isEmpty {
             HStack(spacing: 5) {
                 ForEach(projectTags, id: \.self) { tag in
-                    Label(KiemModel.projectName(tag), systemImage: "folder")
+                    Button {
+                        openProject(tag)
+                    } label: {
+                        Label(KiemModel.projectName(tag), systemImage: "folder")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open project")
                 }
                 Spacer()
             }
