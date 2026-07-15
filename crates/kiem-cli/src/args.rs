@@ -100,6 +100,29 @@ pub enum Command {
         #[arg(long = "type")]
         note_type: Option<String>,
     },
+    /// Export notes as a directory of Markdown files — one subfolder per
+    /// project, one file per note (body verbatim). Notes without a project
+    /// are skipped.
+    Export {
+        /// Destination directory (created if missing)
+        dir: PathBuf,
+        /// Export just this project (a name or proj/<slug>), flat into <dir> —
+        /// the folder itself is the project
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Import a directory of Markdown files as notes. A folder is a project:
+    /// files in a subfolder join that subfolder's project; files at the top
+    /// level join a project named after the directory itself. Re-importing
+    /// the same directory is a no-op (exact-body duplicates are skipped).
+    Import {
+        /// Directory to scan for .md files
+        dir: PathBuf,
+        /// Put every imported note in this project (a name or proj/<slug>)
+        /// instead of deriving projects from folder names
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Run the sync daemon (foreground): connect known peers, keep notes converged
     Sync {
         /// Sync round interval in milliseconds

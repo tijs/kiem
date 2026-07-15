@@ -111,6 +111,27 @@ pub fn to_tag(name: &str) -> String {
     }
 }
 
+/// `to_tag`, but a name with no slug-able characters is an error instead of
+/// an empty string — for callers that must refuse rather than fall back.
+pub fn require_tag(name: &str) -> Result<String> {
+    let tag = to_tag(name);
+    if tag.is_empty() {
+        bail!("cannot derive a project name from {name:?}");
+    }
+    Ok(tag)
+}
+
+/// Body with `#tag` appended — unless the body's derived tags already include
+/// it (a hand-tagged note must not carry it twice). The single definition of
+/// the rule `kiem note add` and `kiem import` share.
+pub fn ensure_tag(body: &str, tag: &str) -> String {
+    if kiem_core::content::extract_tags(body).iter().any(|t| t == tag) {
+        body.to_string()
+    } else {
+        format!("{}\n\n#{tag}", body.trim_end())
+    }
+}
+
 /// Slugify into characters a Kiem tag accepts (`[a-z0-9_/]` — the tag regex has
 /// no `-`, so the separator is `_`): lowercase; spaces/dashes/underscores → `_`;
 /// keep `[a-z0-9/]`; drop the rest; collapse repeats and trim leading/trailing `_`.

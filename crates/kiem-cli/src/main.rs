@@ -11,6 +11,7 @@ mod control;
 mod daemon;
 mod pair;
 mod project;
+mod transfer;
 
 use std::io::{IsTerminal, Read};
 use std::path::Path;
@@ -174,10 +175,7 @@ fn run() -> Result<()> {
         }
         Command::Project { action } => match action {
             ProjectAction::Add { name } => {
-                let tag = project::to_tag(&name);
-                if tag.is_empty() {
-                    bail!("cannot derive a project name from {name:?}");
-                }
+                let tag = project::require_tag(&name)?;
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let marker = project::write_marker(&cwd, &tag)?;
                 project::ensure_agents_pointer(&cwd, &tag)?;
@@ -296,13 +294,7 @@ fn run() -> Result<()> {
                 };
                 let cwd = std::env::current_dir().context("reading current directory")?;
                 let tag = project::resolve(&cwd, project_override.as_deref())?;
-                // Only auto-append the project tag if the text doesn't already
-                // carry it — otherwise a hand-tagged note ends up with it twice.
-                let body = if kiem_core::content::extract_tags(&text).contains(&tag) {
-                    text
-                } else {
-                    format!("{text}\n\n#{tag}")
-                };
+                let body = project::ensure_tag(&text, &tag);
                 let meta = store.create_note_with_type(
                     &body,
                     &author(&data_dir)?,
@@ -336,6 +328,55 @@ fn run() -> Result<()> {
                 for m in &notes {
                     println!("{}  {}  {}{}", m.id, m.modified_at, display_title(m), tag_suffix(m));
                 }
+            }
+        }
+        Command::Export { dir, project: only } => match only {
+            Some(name) => {
+                let tag = project::require_tag(&name)?;
+                let written = transfer::export_project(&store, &dir, &tag)?;
+                if cli.json {
+                    print_json(&json!({"written": written, "project": tag}))?;
+                } else {
+                    println!("Exported {written} notes from {tag} to {}", dir.display());
+                }
+            }
+            None => {
+                let (written, skipped) = transfer::export_all(&store, &dir)?;
+                if cli.json {
+                    print_json(&json!({"written": written, "skipped_without_project": skipped}))?;
+                } else {
+                    println!("Exported {written} notes to {}", dir.display());
+                    if skipped > 0 {
+                        println!("(skipped {skipped} notes without a project — export is per-project; give them a #proj/<slug> tag to include them)");
+                    }
+                }
+            }
+        },
+        Command::Import { dir, project: project_override } => {
+            let tag_override =
+                project_override.as_deref().map(project::require_tag).transpose()?;
+            let (created, skipped) =
+                transfer::import(&mut store, &dir, &author(&data_dir)?, tag_override.as_deref())?;
+            if cli.json {
+                let created: Vec<_> = created
+                    .iter()
+                    .map(|(file, meta)| json!({"file": file.display().to_string(), "note": meta}))
+                    .collect();
+                print_json(&json!({"created": created, "skipped_duplicates": skipped}))?;
+            } else {
+                for (_, meta) in &created {
+                    println!("{}  {}{}", meta.id, display_title(meta), tag_suffix(meta));
+                }
+                println!(
+                    "Imported {} notes from {}{}",
+                    created.len(),
+                    dir.display(),
+                    if skipped > 0 {
+                        format!(" ({skipped} already present, skipped)")
+                    } else {
+                        String::new()
+                    }
+                );
             }
         }
         Command::Sync { .. } | Command::SyncStatus | Command::Pair { .. } => {
