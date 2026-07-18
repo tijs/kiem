@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.17 - 2026-07-18
+
+- Fixed: copying a pairing code from one Kiem app and adding it in another no longer fails with a misleading “Check the code” error. The app now schedules pairing work on its existing Tokio runtime.
+- Improved: the pairing-code input is left-aligned, monospaced, and accepts visually wrapped pasted codes.
+- Improved: after moving an open note to Trash, the next remaining note stays selected.
+
 ## 0.1.0-alpha.16 - 2026-07-18
 
 - Added: multi-select in the note list — ⌘-click/⇧-click select several notes, and every action works the same through right-click or drag-to-sidebar: drag to Trash or right-click > Move to Trash; drag onto a project or right-click > Add to Project; drag onto a tag to tag; drag onto Pinned or right-click > Pin. Restore in Trash, ⌫/⌘⌫, and the editor pane's "N notes selected" placeholder all follow the selection.

@@ -109,7 +109,12 @@ pub fn my_ticket(endpoint: &Endpoint) -> EndpointTicket {
 /// Parses a pasted/scanned ticket into the peer's address, for both connecting
 /// and recording in the known-peers store.
 pub fn parse_ticket(ticket: &str) -> Result<EndpointAddr, PeersError> {
-    let ticket: EndpointTicket = ticket.parse()?;
+    // Tickets are one token; tolerate visual line wrapping when pasted from a UI.
+    let ticket: EndpointTicket = ticket
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .parse()?;
     Ok(ticket.endpoint_addr().clone())
 }
 
@@ -132,6 +137,16 @@ mod tests {
 
         let reloaded = KnownPeers::load(&peers_path).unwrap();
         assert!(reloaded.contains(&their_id));
+    }
+
+    #[test]
+    fn parses_a_visually_wrapped_ticket() {
+        let their_id = iroh::SecretKey::generate().public();
+        let ticket = EndpointTicket::new(EndpointAddr::from(their_id)).to_string();
+        let middle = ticket.len() / 2;
+        let wrapped = format!("  {}\n{}  ", &ticket[..middle], &ticket[middle..]);
+
+        assert_eq!(parse_ticket(&wrapped).unwrap().id, their_id);
     }
 
     #[test]

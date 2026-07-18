@@ -1,6 +1,6 @@
 [package]
 name = "kiem-core"
-version = "0.1.0-alpha.16"
+version = "0.1.0-alpha.17"
 edition = "2021"
 description = "Kiem core library: shared note logic that is the single source of truth across CLI, FFI, and app surfaces."
 

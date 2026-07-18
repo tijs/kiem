@@ -117,8 +117,11 @@ struct SyncSettingsView: View {
                 .frame(maxWidth: .infinity)
 
             TextField("Paste code…", text: $pastedTicket, axis: .vertical)
-                .lineLimit(3, reservesSpace: true)
+                .font(.body.monospaced())
+                .multilineTextAlignment(.leading)
+                .lineLimit(4, reservesSpace: true)
                 .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("pairing-code")
 
             Button("Add device") {
                 model.addDevice(ticket: pastedTicket)

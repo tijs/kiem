@@ -177,9 +177,9 @@ final class KiemModel {
         }
     }
 
-    // Runs on the main actor (SE-0371 isolated deinit), so the watch sources
-    // and tasks — all main-actor state — can be torn down without
-    // `nonisolated(unsafe)` escape hatches.
+    /// Runs on the main actor (SE-0371 isolated deinit), so the watch sources
+    /// and tasks — all main-actor state — can be torn down without
+    /// `nonisolated(unsafe)` escape hatches.
     isolated deinit {
         for source in dbWatchSources {
             source.cancel()
@@ -606,11 +606,24 @@ final class KiemModel {
     func trashNotes(_ ids: Set<String>) {
         // Don't let a pending edit land in a note after it's trashed.
         flushPendingEdit()
+        let replacementID: String?
+        if ids.count == 1,
+           let selected = selectedNoteID,
+           ids.contains(selected),
+           let index = notes.firstIndex(where: { $0.id == selected })
+        {
+            replacementID = notes.dropFirst(index + 1).first?.id ?? notes[..<index].last?.id
+        } else {
+            replacementID = nil
+        }
         for id in ids {
             report { try store.deleteNote(id: id) }
         }
         selectedNoteIDs.subtract(ids)
         refresh()
+        if let replacementID, notes.contains(where: { $0.id == replacementID }) {
+            selectedNoteID = replacementID
+        }
     }
 
     /// Restore trashed notes (undo "Move to Trash").

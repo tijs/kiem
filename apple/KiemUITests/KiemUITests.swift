@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 /// UI regression tests for the flows that burned us and that scripts can't
@@ -106,6 +107,51 @@ final class KiemUITests: XCTestCase {
         XCTAssertFalse(
             app.buttons["Move “Confirm delete me” to Trash"].exists,
             "⌘⌫ must not raise a confirmation dialog"
+        )
+    }
+
+    /// Deleting the open note keeps the editor on the next remaining row.
+    func testDeletingSelectedNoteSelectsNextNote() {
+        let app = launchApp()
+        createNote(app, body: "First remaining note\nbody one")
+        createNote(app, body: "Delete this note\nbody two")
+
+        let deletedRow = noteRow(app, title: "Delete this note")
+        XCTAssertTrue(deletedRow.waitForExistence(timeout: 5))
+        deletedRow.click()
+        app.typeKey(.delete, modifierFlags: [.command])
+        XCTAssertTrue(deletedRow.waitForNonExistence(timeout: 5))
+
+        let editor = app.textViews.firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5), "next note did not open after deletion")
+        let value = editor.value as? String ?? ""
+        XCTAssertTrue(value.contains("body one"), "the remaining note was not selected (got: \(value.prefix(80)))")
+    }
+
+    /// A code copied from the app must survive the Add-a-device text field and
+    /// register a peer (using this app's own code keeps the test local).
+    func testCopiedPairingCodeCanBePasted() {
+        let app = launchApp()
+        XCTAssertTrue(app.buttons["New Note"].firstMatch.waitForExistence(timeout: 30))
+        app.typeKey(",", modifierFlags: .command)
+
+        let copyCode = app.buttons["Copy code"].firstMatch
+        XCTAssertTrue(copyCode.waitForExistence(timeout: 25), "pairing code did not load")
+        copyCode.click()
+        let copied = NSPasteboard.general.string(forType: .string)
+        XCTAssertFalse(copied?.isEmpty ?? true, "Copy code did not write a ticket")
+        app.radioButtons["Add a device"].firstMatch.click()
+
+        let input = app.descendants(matching: .any)["pairing-code"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.click()
+        app.typeKey("v", modifierFlags: .command)
+        XCTAssertEqual(input.value as? String, copied, "paste changed the pairing code")
+        app.buttons["Add device"].firstMatch.click()
+
+        XCTAssertTrue(
+            app.staticTexts["No devices paired yet"].waitForNonExistence(timeout: 5),
+            "the copied code was rejected"
         )
     }
 

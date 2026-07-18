@@ -358,18 +358,18 @@ impl KiemStore {
     /// standalone one. Both wait (bounded) for relay registration, so call this
     /// off the main thread.
     pub fn pair_ticket(&self) -> Result<String, KiemError> {
-        // Clone out the mesh Arc so the bounded relay wait doesn't hold the
-        // sync lock (the sync-status UI reads it too).
-        let mesh = self
+        // A running mesh's futures must run on the runtime that owns it.
+        // Clone its handle so the relay wait doesn't hold the sync lock.
+        let runtime = self
             .sync
             .lock()
             .expect("sync lock poisoned")
             .as_ref()
-            .map(|handle| handle.mesh.clone());
-        let runtime = tokio::runtime::Runtime::new().map_err(sync_err)?;
-        match mesh {
-            Some(mesh) => Ok(runtime.block_on(mesh.ticket_online())),
-            None => runtime
+            .map(|handle| (handle.runtime.handle().clone(), handle.mesh.clone()));
+        match runtime {
+            Some((runtime, mesh)) => Ok(runtime.block_on(mesh.ticket_online())),
+            None => tokio::runtime::Runtime::new()
+                .map_err(sync_err)?
                 .block_on(kiem_sync::pair_ticket(&self.data_dir))
                 .map_err(sync_err),
         }
@@ -405,6 +405,7 @@ impl KiemStore {
         let addr = kiem_sync::pair_add(&self.data_dir, &ticket).map_err(sync_err)?;
         let id = addr.id;
         if let Some(handle) = self.sync.lock().expect("sync lock poisoned").as_ref() {
+            let _runtime = handle.runtime.enter();
             handle.mesh.pair_dial(addr.clone());
             handle.mesh.dial(addr);
         }
@@ -615,19 +616,18 @@ mod tests {
         a.create_note("# Mesh\n\nvia ffi sync".into(), "did:a".into())
             .unwrap();
 
+        a.start_sync(50, Arc::new(NullEvents)).unwrap();
+        b.start_sync(50, Arc::new(NullEvents)).unwrap();
+        a.arm_pairing(60);
+        b.arm_pairing(60);
+
+        // Fetch live tickets and add after sync starts: the app follows this
+        // route, so both calls must enter the mesh's existing Tokio runtime.
         let ticket_a = a.pair_ticket().unwrap();
         let ticket_b = b.pair_ticket().unwrap();
         a.add_known_peer(ticket_b).unwrap();
         b.add_known_peer(ticket_a).unwrap();
 
-        a.start_sync(50, Arc::new(NullEvents)).unwrap();
-        b.start_sync(50, Arc::new(NullEvents)).unwrap();
-
-        // Generous: this dials by bare EndpointId with no prior direct-address
-        // hint, so first contact depends on iroh's discovery (DNS/Pkarr) and
-        // relay resolution, which can take tens of seconds depending on
-        // network conditions — a real (if occasionally slow), not simulated,
-        // property of dial-by-id.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
         loop {
             if b.list_notes().unwrap().iter().any(|n| n.title == "Mesh") {
