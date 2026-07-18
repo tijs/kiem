@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.15 - 2026-07-18
 
 - Added: import/export in the macOS app — File > Import Notes from Folder… / Export All Notes… run the same folder-per-project Markdown exchange as the CLI (the logic moved into the shared core, so both surfaces are one implementation). A summary alert reports how many notes were transferred and skipped.
 - Added: `kiem export <dir>` / `kiem import <dir>` — exchange notes (and their todos) as a directory of Markdown files, same layout both directions: a folder is a project. Export writes one subfolder per project with one file per note (body verbatim); `--project` exports one project flat into the directory itself. Import maps subfolders to projects, treats a flat folder as one project named after it (`--project` overrides), and skips exact duplicates so re-importing is a no-op. Import is all-or-nothing: every folder is validated before any note is created, so a folder that can't name a project fails the import cleanly instead of leaving it half-done. A non-default note type (plan, review, …) travels as a `type:` line in the file's frontmatter fence.
