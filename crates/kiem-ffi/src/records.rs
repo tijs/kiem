@@ -53,7 +53,12 @@ pub struct SearchResult {
 
 impl From<kiem_core::search::SearchResult> for SearchResult {
     fn from(r: kiem_core::search::SearchResult) -> Self {
-        SearchResult { note_id: r.note_id, title: r.title, snippet: r.snippet, score: r.score }
+        SearchResult {
+            note_id: r.note_id,
+            title: r.title,
+            snippet: r.snippet,
+            score: r.score,
+        }
     }
 }
 
@@ -95,7 +100,11 @@ pub struct ProjectTodo {
 
 impl From<kiem_core::store::ProjectTodo> for ProjectTodo {
     fn from(t: kiem_core::store::ProjectTodo) -> Self {
-        ProjectTodo { note_id: t.note_id, index: t.index as u32, text: t.text }
+        ProjectTodo {
+            note_id: t.note_id,
+            index: t.index as u32,
+            text: t.text,
+        }
     }
 }
 
@@ -128,7 +137,9 @@ impl From<StoreError> for KiemError {
         match err {
             StoreError::NotFound(id) => KiemError::NotFound { id },
             StoreError::DuplicateId(id) => KiemError::Duplicate { id },
-            other => KiemError::Storage { message: other.to_string() },
+            other => KiemError::Storage {
+                message: other.to_string(),
+            },
         }
     }
 }
@@ -137,7 +148,9 @@ impl From<kiem_core::transfer::TransferError> for KiemError {
     fn from(err: kiem_core::transfer::TransferError) -> Self {
         match err {
             kiem_core::transfer::TransferError::Store(e) => e.into(),
-            other => KiemError::Transfer { message: other.to_string() },
+            other => KiemError::Transfer {
+                message: other.to_string(),
+            },
         }
     }
 }
@@ -146,8 +159,9 @@ impl From<kiem_core::sync::SyncError> for KiemError {
     fn from(err: kiem_core::sync::SyncError) -> Self {
         match err {
             kiem_core::sync::SyncError::Store(e) => e.into(),
-            other => KiemError::Sync { message: other.to_string() },
+            other => KiemError::Sync {
+                message: other.to_string(),
+            },
         }
     }
 }
-

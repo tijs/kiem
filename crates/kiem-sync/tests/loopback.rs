@@ -66,7 +66,8 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
             let b_state = b_state.clone();
             async move {
                 let conn = kiem_sync::accept(&b_ep).await.unwrap().unwrap();
-                kiem_sync::run_session(conn, false, b_state, Duration::from_millis(20), b_handshake).await
+                kiem_sync::run_session(conn, false, b_state, Duration::from_millis(20), b_handshake)
+                    .await
             }
         });
 
@@ -90,7 +91,10 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
 
         accept_task.abort();
         connect_task.abort();
-        assert!(synced, "note did not sync from A to B over the iroh connection");
+        assert!(
+            synced,
+            "note did not sync from A to B over the iroh connection"
+        );
         // One connection paired both directions: each side recorded the other.
         assert!(
             a_seen.lock().unwrap().contains(&b_id),

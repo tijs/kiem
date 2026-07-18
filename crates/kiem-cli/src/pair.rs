@@ -50,7 +50,13 @@ pub async fn add(data_dir: &Path, ticket: &str, as_json: bool) -> Result<()> {
 async fn show_via_daemon(stream: UnixStream, yes: bool, as_json: bool) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
-    send_line(&mut write, &Request::Show { window_secs: WINDOW.as_secs() }).await?;
+    send_line(
+        &mut write,
+        &Request::Show {
+            window_secs: WINDOW.as_secs(),
+        },
+    )
+    .await?;
 
     // Slack past the window: the daemon's ticket wait runs inside it.
     let deadline = tokio::time::Instant::now() + WINDOW + Duration::from_secs(15);
@@ -75,7 +81,13 @@ async fn show_via_daemon(stream: UnixStream, yes: bool, as_json: bool) -> Result
 async fn add_via_daemon(stream: UnixStream, ticket: &str, as_json: bool) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
-    send_line(&mut write, &Request::Add { ticket: ticket.to_owned() }).await?;
+    send_line(
+        &mut write,
+        &Request::Add {
+            ticket: ticket.to_owned(),
+        },
+    )
+    .await?;
 
     let deadline = tokio::time::Instant::now() + ADD_CONNECT_WAIT;
     let mut added = None;
@@ -112,7 +124,9 @@ async fn read_response(
         return Ok(None);
     };
     let line = line?.context("the daemon closed the control connection")?;
-    Ok(Some(serde_json::from_str(&line).context("bad control response")?))
+    Ok(Some(
+        serde_json::from_str(&line).context("bad control response")?,
+    ))
 }
 
 async fn prompt_allow(peer: &str) -> Result<bool> {
@@ -242,7 +256,12 @@ impl MeshEvents for TerminalEvents {
     }
 
     fn on_error(&self, context: &str, error: &str) {
-        if self.seen_errors.lock().unwrap().insert(format!("{context}: {error}")) {
+        if self
+            .seen_errors
+            .lock()
+            .unwrap()
+            .insert(format!("{context}: {error}"))
+        {
             eprintln!("kiem pair: {context}: {error}");
         }
     }
@@ -277,7 +296,9 @@ fn print_ticket(ticket: &str, as_json: bool) {
     } else {
         println!("{ticket}");
         eprintln!();
-        eprintln!("On the other device: Settings → Sync → Add a device (or `kiem pair add <code>`).");
+        eprintln!(
+            "On the other device: Settings → Sync → Add a device (or `kiem pair add <code>`)."
+        );
         eprintln!(
             "Waiting for a device to pair ({}s window, Ctrl-C to cancel)…",
             WINDOW.as_secs()
@@ -297,6 +318,8 @@ fn print_added_pending(peer: &str, as_json: bool) {
     if as_json {
         println!("{}", json!({ "added": peer, "connected": false }));
     } else {
-        println!("added peer {peer} — not reachable yet; it will link up when both devices are online");
+        println!(
+            "added peer {peer} — not reachable yet; it will link up when both devices are online"
+        );
     }
 }

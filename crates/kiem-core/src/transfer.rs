@@ -7,6 +7,7 @@
 //! touch: a non-default note type travels as a `type:` line in the
 //! frontmatter fence (core derives status from frontmatter, never type).
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -37,7 +38,10 @@ fn io_ctx<T>(
     res: std::io::Result<T>,
     context: impl FnOnce() -> String,
 ) -> Result<T, TransferError> {
-    res.map_err(|source| TransferError::Io { context: context(), source })
+    res.map_err(|source| TransferError::Io {
+        context: context(),
+        source,
+    })
 }
 
 /// Export every note that belongs to a project into `dir/<slug>/`. Notes
@@ -45,9 +49,21 @@ fn io_ctx<T>(
 /// a note with several project tags goes under its first one only). Returns
 /// `(written, skipped)`.
 pub fn export_all(store: &NoteStore, dir: &Path) -> Result<(usize, usize), TransferError> {
+    export_all_with_progress(store, dir, &mut |_, _| {})
+}
+
+/// [`export_all`] reporting `(done, total)` after each note — for surfaces
+/// that show a progress bar over a long transfer.
+pub fn export_all_with_progress(
+    store: &NoteStore,
+    dir: &Path,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<(usize, usize), TransferError> {
     let mut written = 0;
     let mut skipped = 0;
-    for meta in store.list_notes()? {
+    let notes = store.list_notes()?;
+    let total = notes.len();
+    for (done, meta) in notes.into_iter().enumerate() {
         // A nested slug (`proj/work/meetings`) becomes a nested folder path,
         // which `import` maps back to the same tag.
         let folder = meta
@@ -55,12 +71,13 @@ pub fn export_all(store: &NoteStore, dir: &Path) -> Result<(usize, usize), Trans
             .iter()
             .find_map(|t| t.strip_prefix(project::TAG_PREFIX))
             .and_then(slug_folder);
-        let Some(folder) = folder else {
+        if let Some(folder) = folder {
+            write_note(store, &meta, &dir.join(folder))?;
+            written += 1;
+        } else {
             skipped += 1;
-            continue;
-        };
-        write_note(store, &meta, &dir.join(folder))?;
-        written += 1;
+        }
+        progress(done + 1, total);
     }
     Ok((written, skipped))
 }
@@ -91,7 +108,9 @@ fn write_note(store: &NoteStore, meta: &NoteMetadata, folder: &Path) -> Result<(
     let note = store
         .get_note(&meta.id)?
         .ok_or_else(|| StoreError::NotFound(meta.id.clone()))?;
-    io_ctx(std::fs::create_dir_all(folder), || format!("creating {}", folder.display()))?;
+    io_ctx(std::fs::create_dir_all(folder), || {
+        format!("creating {}", folder.display())
+    })?;
     // Stable, unique filename: title slug + short id, so re-exporting an
     // unchanged note overwrites its file. (A renamed or trashed note leaves
     // its old file behind — re-export into a fresh dir when that matters.)
@@ -106,39 +125,67 @@ fn write_note(store: &NoteStore, meta: &NoteMetadata, folder: &Path) -> Result<(
     } else {
         with_frontmatter_type(note.body.as_str(), &meta.note_type)
     };
-    io_ctx(std::fs::write(&path, body), || format!("writing {}", path.display()))
+    io_ctx(std::fs::write(&path, body), || {
+        format!("writing {}", path.display())
+    })
+}
+
+/// How [`import`] assigns projects to the notes it creates.
+#[derive(Clone, Copy)]
+pub enum ProjectSource<'a> {
+    /// A folder is a project: files in a subfolder join that subfolder's
+    /// project; top-level files join a project named after the import dir
+    /// itself (the flat-folder-is-a-project case).
+    Folders,
+    /// Everything joins this one project (a `proj/<slug>` tag).
+    Tag(&'a str),
+    /// No project at all — notes keep only the tags already in their bodies
+    /// (e.g. importing an exported Bear/Obsidian dump that isn't one project).
+    None,
 }
 
 /// Import every `.md` file under `dir` as a note; returns the created
 /// `(file, metadata)` pairs plus how many files were skipped as duplicates.
-/// A file's project is its parent folder, slugified: files in a subfolder get
-/// that subfolder's project; files at the top level get a project named after
-/// `dir` itself (the flat-folder-is-a-project case). `override_tag` forces
-/// one project for everything. The tag is appended to the body unless already
-/// present, and a file whose body already exists in the target project is
-/// skipped, so re-importing the same directory is a no-op.
+/// The project tag (per `source`) is appended to the body unless already
+/// present, and a file whose body already exists is skipped, so re-importing
+/// the same directory is a no-op.
 pub fn import(
     store: &mut NoteStore,
     dir: &Path,
     author: &str,
-    override_tag: Option<&str>,
+    source: ProjectSource,
+) -> Result<(Vec<(PathBuf, NoteMetadata)>, usize), TransferError> {
+    import_with_progress(store, dir, author, source, &mut |_, _| {})
+}
+
+/// [`import`] reporting `(done, total)` after each file — for surfaces that
+/// show a progress bar over a long transfer.
+pub fn import_with_progress(
+    store: &mut NoteStore,
+    dir: &Path,
+    author: &str,
+    source: ProjectSource,
+    progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(Vec<(PathBuf, NoteMetadata)>, usize), TransferError> {
     // Canonicalize so importing `.` (file_name() == None) and trailing `..`
     // resolve to the folder's real name — and so a bad path fails here, not
     // per-file after a partial import.
-    let dir = io_ctx(dir.canonicalize(), || format!("resolving directory {}", dir.display()))?;
+    let dir = io_ctx(dir.canonicalize(), || {
+        format!("resolving directory {}", dir.display())
+    })?;
     let mut files = Vec::new();
     collect_md_files(&dir, &mut files)?;
     files.sort();
     // Resolve every file's project up front, so one bad folder name fails the
     // whole import before anything is created (all-or-nothing) — not mid-loop
     // after earlier folders' notes were already written.
-    let tagged: Vec<(PathBuf, String)> = files
+    let tagged: Vec<(PathBuf, Option<String>)> = files
         .into_iter()
         .map(|file| {
-            let tag = match override_tag {
-                Some(tag) => tag.to_string(),
-                None => tag_for(&dir, &file)?,
+            let tag = match source {
+                ProjectSource::Tag(tag) => Some(tag.to_string()),
+                ProjectSource::Folders => Some(tag_for(&dir, &file)?),
+                ProjectSource::None => None,
             };
             Ok((file, tag))
         })
@@ -146,31 +193,59 @@ pub fn import(
 
     let mut created = Vec::new();
     let mut skipped_duplicates = 0;
-    for (file, tag) in tagged {
-        let text = io_ctx(std::fs::read_to_string(&file), || {
-            format!("reading {}", file.display())
-        })?;
-        if text.trim().is_empty() {
-            continue;
-        }
-        let body = project::ensure_tag(&text, &tag);
-        // ponytail: O(files×notes) body rescan; cache bodies per tag if imports get big
-        let mut exists = false;
-        for m in store.list_by_tag(&tag)? {
-            let note = store.get_note(&m.id)?.ok_or_else(|| StoreError::NotFound(m.id.clone()))?;
-            if note.body.as_str() == body {
-                exists = true;
-                break;
+    // Duplicate check: existing bodies loaded once per project (hydrating
+    // every note per FILE made a 400-file import take minutes), and each
+    // created body joins the set so identical files within one import batch
+    // still dedupe.
+    let mut existing: HashMap<String, HashSet<String>> = HashMap::new();
+    let total = tagged.len();
+    // `bulk`: one SQLite transaction + one search-index rebuild instead of
+    // per-note commits — and a mid-import error rolls everything back, so
+    // the all-or-nothing promise covers I/O failures too.
+    store.bulk(|store| -> Result<(), TransferError> {
+        for (done, (file, tag)) in tagged.into_iter().enumerate() {
+            let text = io_ctx(std::fs::read_to_string(&file), || {
+                format!("reading {}", file.display())
+            })?;
+            if text.trim().is_empty() {
+                progress(done + 1, total);
+                continue;
             }
+            let body = match &tag {
+                Some(tag) => project::ensure_tag(&text, tag),
+                None => text,
+            };
+            // Untagged imports ("" key) compare against every note — with no
+            // project to scope to, a duplicate is any note with the same body.
+            let bodies = match existing.entry(tag.clone().unwrap_or_default()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    let mut set = HashSet::new();
+                    let known = match &tag {
+                        Some(tag) => store.list_by_tag(tag)?,
+                        None => store.list_notes()?,
+                    };
+                    for m in known {
+                        let note = store
+                            .get_note(&m.id)?
+                            .ok_or_else(|| StoreError::NotFound(m.id.clone()))?;
+                        set.insert(note.body.as_str().to_string());
+                    }
+                    v.insert(set)
+                }
+            };
+            if bodies.contains(&body) {
+                skipped_duplicates += 1;
+            } else {
+                let note_type = frontmatter_type(&body).unwrap_or_default();
+                let meta = store.create_note_with_type(&body, author, note_type)?;
+                bodies.insert(body);
+                created.push((file, meta));
+            }
+            progress(done + 1, total);
         }
-        if exists {
-            skipped_duplicates += 1;
-            continue;
-        }
-        let note_type = frontmatter_type(&body).unwrap_or_default();
-        let meta = store.create_note_with_type(&body, author, note_type)?;
-        created.push((file, meta));
-    }
+        Ok(())
+    })?;
     Ok((created, skipped_duplicates))
 }
 
@@ -181,15 +256,22 @@ pub fn import(
 fn tag_for(dir: &Path, file: &Path) -> Result<String, TransferError> {
     let parent = file.parent().unwrap_or(dir);
     let name = if parent == dir {
-        dir.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string()
+        dir.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string()
     } else {
         let rel = parent.strip_prefix(dir).unwrap_or(parent);
-        rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/")
+        rel.to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/")
     };
     let tag = project::to_tag(&name);
     let slug = tag.strip_prefix(project::TAG_PREFIX).unwrap_or("");
     if slug.is_empty() || slug.split('/').any(|c| c.is_empty()) {
-        return Err(TransferError::NoProject { name, file: file.display().to_string() });
+        return Err(TransferError::NoProject {
+            name,
+            file: file.display().to_string(),
+        });
     }
     Ok(tag)
 }
@@ -199,20 +281,29 @@ fn tag_for(dir: &Path, file: &Path) -> Result<String, TransferError> {
 /// symlinked directory is never followed — a cycle like `ln -s . loop` must
 /// not recurse forever, and a symlink into a sibling tree must not import it.
 fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), TransferError> {
-    let entries = io_ctx(std::fs::read_dir(dir), || format!("reading directory {}", dir.display()))?;
+    let entries = io_ctx(std::fs::read_dir(dir), || {
+        format!("reading directory {}", dir.display())
+    })?;
     for entry in entries {
         let entry = io_ctx(entry, || format!("reading directory {}", dir.display()))?;
         let path = entry.path();
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
         if name.starts_with('.') {
             continue;
         }
-        let file_type =
-            io_ctx(entry.file_type(), || format!("reading file type of {}", path.display()))?;
+        let file_type = io_ctx(entry.file_type(), || {
+            format!("reading file type of {}", path.display())
+        })?;
         if file_type.is_dir() {
             collect_md_files(&path, out)?;
         } else if file_type.is_file()
-            && path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("md"))
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
         {
             out.push(path);
         }
@@ -232,7 +323,11 @@ fn with_frontmatter_type(body: &str, note_type: &str) -> String {
     };
     match close {
         None => format!("---\ntype: {note_type}\n---\n\n{body}"),
-        Some(i) if lines[1..=i].iter().any(|l| l.trim_start().starts_with("type:")) => {
+        Some(i)
+            if lines[1..=i]
+                .iter()
+                .any(|l| l.trim_start().starts_with("type:")) =>
+        {
             body.to_string()
         }
         Some(_) => {
@@ -275,12 +370,18 @@ mod tests {
     #[test]
     fn export_writes_project_folders_and_skips_unfiled_notes() {
         let (_guard, mut store) = new_store();
-        store.create_note("# Plan\n\n- [ ] ship it\n\n#proj/demo", "t").unwrap();
-        store.create_note("# Nested\n\n#proj/work/meetings", "t").unwrap();
+        store
+            .create_note("# Plan\n\n- [ ] ship it\n\n#proj/demo", "t")
+            .unwrap();
+        store
+            .create_note("# Nested\n\n#proj/work/meetings", "t")
+            .unwrap();
         store.create_note("# No project here", "t").unwrap();
         // A slash in the title must stay in the filename stem, not become a
         // subfolder that import would read as a different project.
-        store.create_note("# work/meetings agenda\n\n#proj/demo", "t").unwrap();
+        store
+            .create_note("# work/meetings agenda\n\n#proj/demo", "t")
+            .unwrap();
         // Degenerate tags: `proj//sub` must not escape the export dir
         // (its raw suffix `/sub` is absolute); bare `proj/` has no folder.
         store.create_note("# Escapee\n\n#proj//sub", "t").unwrap();
@@ -299,8 +400,16 @@ mod tests {
         let body = std::fs::read_to_string(out.path().join("demo").join(&demo[0])).unwrap();
         assert_eq!(body, "# Plan\n\n- [ ] ship it\n\n#proj/demo");
         // Nested slug → nested folder path; `proj//sub` lands inside the dir.
-        assert_eq!(std::fs::read_dir(out.path().join("work/meetings")).unwrap().count(), 1);
-        assert_eq!(std::fs::read_dir(out.path().join("sub")).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read_dir(out.path().join("work/meetings"))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_dir(out.path().join("sub")).unwrap().count(),
+            1
+        );
         assert!(!Path::new("/sub").exists());
     }
 
@@ -323,18 +432,27 @@ mod tests {
 
         let (_guard, mut store) = new_store();
         // `inbox/proj-a/..` resolves to the root: the `kiem import .` shape.
-        let (created, skipped) = import(&mut store, &root.join("proj-a/.."), "t", None).unwrap();
+        let (created, skipped) = import(
+            &mut store,
+            &root.join("proj-a/.."),
+            "t",
+            ProjectSource::Folders,
+        )
+        .unwrap();
         assert_eq!(created.len(), 2);
         assert_eq!(skipped, 0);
 
         let a = store.list_by_tag("proj/proj_a").unwrap();
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].title, "One");
-        assert_eq!(store.list_todo_items_for_tag("proj/proj_a").unwrap().len(), 1);
+        assert_eq!(
+            store.list_todo_items_for_tag("proj/proj_a").unwrap().len(),
+            1
+        );
         assert_eq!(store.list_by_tag("proj/inbox").unwrap()[0].title, "Two");
 
         // Re-import: everything already exists, nothing is duplicated.
-        let (again, skipped) = import(&mut store, &root, "t", None).unwrap();
+        let (again, skipped) = import(&mut store, &root, "t", ProjectSource::Folders).unwrap();
         assert!(again.is_empty());
         assert_eq!(skipped, 2);
         assert_eq!(store.list_notes().unwrap().len(), 2);
@@ -343,27 +461,35 @@ mod tests {
     #[test]
     fn export_import_round_trip_preserves_bodies_projects_and_types() {
         let (_guard, mut store) = new_store();
-        store.create_note("# A\n\n- [ ] alpha\n\n#proj/demo", "t").unwrap();
-        store.create_note_with_type("# B\n\nbody\n\n#proj/other", "t", "plan").unwrap();
+        store
+            .create_note("# A\n\n- [ ] alpha\n\n#proj/demo", "t")
+            .unwrap();
+        store
+            .create_note_with_type("# B\n\nbody\n\n#proj/other", "t", "plan")
+            .unwrap();
 
         let out = tempfile::tempdir().unwrap();
         export_all(&store, out.path()).unwrap();
 
         let (_guard2, mut fresh) = new_store();
-        let (created, _) = import(&mut fresh, out.path(), "t", None).unwrap();
+        let (created, _) = import(&mut fresh, out.path(), "t", ProjectSource::Folders).unwrap();
         assert_eq!(created.len(), 2);
         let a = &fresh.list_by_tag("proj/demo").unwrap()[0];
         assert_eq!(
             fresh.get_note(&a.id).unwrap().unwrap().body.as_str(),
             "# A\n\n- [ ] alpha\n\n#proj/demo"
         );
-        assert_eq!(fresh.list_todo_items_for_tag("proj/demo").unwrap()[0].text, "alpha");
+        assert_eq!(
+            fresh.list_todo_items_for_tag("proj/demo").unwrap()[0].text,
+            "alpha"
+        );
         // The non-default type traveled via the frontmatter fence.
         let b = &fresh.list_by_tag("proj/other").unwrap()[0];
         assert_eq!(b.title, "B");
         assert_eq!(b.note_type, "plan");
         // And re-importing the typed note is still a no-op.
-        let (created, skipped) = import(&mut fresh, out.path(), "t", None).unwrap();
+        let (created, skipped) =
+            import(&mut fresh, out.path(), "t", ProjectSource::Folders).unwrap();
         assert!(created.is_empty());
         assert_eq!(skipped, 2);
     }
@@ -376,14 +502,28 @@ mod tests {
         let out = tempfile::tempdir().unwrap();
         assert_eq!(export_project(&store, out.path(), "proj/demo").unwrap(), 1);
         // Flat: the file sits directly in the folder, no subfolder.
-        let entry = std::fs::read_dir(out.path()).unwrap().next().unwrap().unwrap();
+        let entry = std::fs::read_dir(out.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
         assert!(entry.path().is_file());
 
         let (_guard2, mut fresh) = new_store();
-        import(&mut fresh, out.path(), "t", Some("proj/forced")).unwrap();
+        import(
+            &mut fresh,
+            out.path(),
+            "t",
+            ProjectSource::Tag("proj/forced"),
+        )
+        .unwrap();
         let meta = &fresh.list_by_tag("proj/forced").unwrap()[0];
         // Original inline tag survives; the override is appended alongside.
-        assert!(fresh.list_by_tag("proj/demo").unwrap().iter().any(|m| m.id == meta.id));
+        assert!(fresh
+            .list_by_tag("proj/demo")
+            .unwrap()
+            .iter()
+            .any(|m| m.id == meta.id));
     }
 
     #[test]
@@ -398,15 +538,60 @@ mod tests {
         std::fs::write(root.join("z.md"), "# Z").unwrap();
 
         let (_guard, mut store) = new_store();
-        let err = import(&mut store, &root, "t", None).unwrap_err();
+        let err = import(&mut store, &root, "t", ProjectSource::Folders).unwrap_err();
         assert!(
             err.to_string().contains("choose a project"),
             "unexpected error: {err}"
         );
-        assert!(store.list_notes().unwrap().is_empty(), "nothing may be written");
+        assert!(
+            store.list_notes().unwrap().is_empty(),
+            "nothing may be written"
+        );
         // An explicit project rescues the same directory.
-        let (created, _) = import(&mut store, &root, "t", Some("proj/x")).unwrap();
+        let (created, _) = import(&mut store, &root, "t", ProjectSource::Tag("proj/x")).unwrap();
         assert_eq!(created.len(), 2);
+    }
+
+    #[test]
+    fn import_without_projects_keeps_notes_untagged_and_dedupes_store_wide() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("bear-dump");
+        std::fs::create_dir_all(root.join("archive")).unwrap();
+        // A flat dump: no project should be minted from any folder name.
+        std::fs::write(root.join("groceries.md"), "# Groceries\n\nmilk #errands").unwrap();
+        std::fs::write(root.join("archive/old.md"), "# Old").unwrap();
+
+        let (_guard, mut store) = new_store();
+        // An identical note already in the store, in NO project — the
+        // duplicate check must still find it without a tag to scope to.
+        store.create_note("# Old", "t").unwrap();
+
+        let (created, skipped) = import(&mut store, &root, "t", ProjectSource::None).unwrap();
+        assert_eq!(created.len(), 1);
+        assert_eq!(skipped, 1);
+        let groceries = &created[0].1;
+        assert_eq!(groceries.title, "Groceries");
+        // Bulk import defers indexing to one rebuild — search must still see
+        // the imported note afterwards.
+        assert_eq!(
+            store.search("groceries", 10).unwrap()[0].note_id,
+            groceries.id
+        );
+        // Only the body's own tag — no proj/* was added anywhere.
+        assert_eq!(groceries.tags, vec!["errands"]);
+        assert!(store
+            .list_tags()
+            .unwrap()
+            .iter()
+            .all(|(t, _)| !t.starts_with("proj/")));
+        // Progress reported per file with a stable total.
+        let mut seen = Vec::new();
+        let (_, _) =
+            import_with_progress(&mut store, &root, "t", ProjectSource::None, &mut |d, t| {
+                seen.push((d, t));
+            })
+            .unwrap();
+        assert_eq!(seen, vec![(1, 2), (2, 2)]);
     }
 
     #[test]
@@ -418,7 +603,11 @@ mod tests {
         // Existing fence (e.g. `status:`) gains a type line, once.
         let merged = with_frontmatter_type("---\nstatus: active\n---\n# A", "plan");
         assert_eq!(merged, "---\ntype: plan\nstatus: active\n---\n# A");
-        assert_eq!(with_frontmatter_type(&merged, "review"), merged, "explicit type wins");
+        assert_eq!(
+            with_frontmatter_type(&merged, "review"),
+            merged,
+            "explicit type wins"
+        );
         // No fence, no type.
         assert_eq!(frontmatter_type("# A\nbody"), None);
     }

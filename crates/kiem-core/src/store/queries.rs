@@ -62,7 +62,9 @@ impl NoteStore {
     pub fn get_doc_bytes(&self, id: &str) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(self
             .conn
-            .query_row("SELECT doc FROM notes WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row("SELECT doc FROM notes WHERE id = ?1", params![id], |r| {
+                r.get(0)
+            })
             .optional()?)
     }
 
@@ -70,9 +72,7 @@ impl NoteStore {
     pub fn get_note(&self, id: &str) -> Result<Option<NoteDoc>, StoreError> {
         match self.load_doc(id)? {
             None => Ok(None),
-            Some(doc) => hydrate(&doc)
-                .map(Some)
-                .map_err(|e| document_err(id, e)),
+            Some(doc) => hydrate(&doc).map(Some).map_err(|e| document_err(id, e)),
         }
     }
 
@@ -81,7 +81,9 @@ impl NoteStore {
     /// `expect_version` to [`edit_lines`](Self::edit_lines) to reject an edit if
     /// the note changed underneath you (the todo-index / concurrent-edit race).
     pub fn note_version(&self, id: &str) -> Result<String, StoreError> {
-        let mut doc = self.load_doc(id)?.ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let mut doc = self
+            .load_doc(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
         Ok(doc_version(&mut doc))
     }
 
@@ -94,6 +96,14 @@ impl NoteStore {
     pub fn list_by_tag(&self, tag: &str) -> Result<Vec<NoteMetadata>, StoreError> {
         self.query_meta(
             "deleted = 0 AND EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE json_each.value = ?1)",
+            params![tag],
+        )
+    }
+
+    /// Trashed notes carrying exactly `tag`, used by bulk restore.
+    pub fn list_deleted_by_tag(&self, tag: &str) -> Result<Vec<NoteMetadata>, StoreError> {
+        self.query_meta(
+            "deleted = 1 AND EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE json_each.value = ?1)",
             params![tag],
         )
     }
@@ -163,7 +173,9 @@ impl NoteStore {
 
     /// Every tag on live notes with its usage count, alphabetical.
     pub fn list_tags(&self) -> Result<Vec<(String, usize)>, StoreError> {
-        let mut stmt = self.conn.prepare("SELECT tags FROM notes WHERE deleted = 0")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tags FROM notes WHERE deleted = 0")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut counts = std::collections::BTreeMap::new();
         for tags_text in rows {
@@ -190,7 +202,10 @@ impl NoteStore {
         self.unchecked_todo_items(metas)
     }
 
-    fn unchecked_todo_items(&self, metas: Vec<NoteMetadata>) -> Result<Vec<ProjectTodo>, StoreError> {
+    fn unchecked_todo_items(
+        &self,
+        metas: Vec<NoteMetadata>,
+    ) -> Result<Vec<ProjectTodo>, StoreError> {
         let mut out = Vec::new();
         for meta in metas {
             let note = self
@@ -198,7 +213,11 @@ impl NoteStore {
                 .ok_or_else(|| StoreError::NotFound(meta.id.clone()))?;
             for item in content::extract_todo_items(note.body.as_str()) {
                 if !item.checked {
-                    out.push(ProjectTodo { note_id: meta.id.clone(), index: item.index, text: item.text });
+                    out.push(ProjectTodo {
+                        note_id: meta.id.clone(),
+                        index: item.index,
+                        text: item.text,
+                    });
                 }
             }
         }
@@ -210,9 +229,8 @@ impl NoteStore {
         predicate: &str,
         args: impl rusqlite::Params,
     ) -> Result<Vec<NoteMetadata>, StoreError> {
-        let sql = format!(
-            "SELECT {META_COLUMNS} FROM notes WHERE {predicate} ORDER BY modified_at DESC"
-        );
+        let sql =
+            format!("SELECT {META_COLUMNS} FROM notes WHERE {predicate} ORDER BY modified_at DESC");
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(args, row_to_meta)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)

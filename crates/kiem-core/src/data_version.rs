@@ -108,7 +108,11 @@ mod tests {
         let backup = std::fs::read_dir(root.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .find(|e| e.file_name().to_string_lossy().contains("backup-0.0.1-previous"))
+            .find(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("backup-0.0.1-previous")
+            })
             .expect("a backup dir was created");
         assert_eq!(
             std::fs::read(backup.path().join("kiem.db")).unwrap(),

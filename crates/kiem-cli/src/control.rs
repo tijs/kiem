@@ -129,7 +129,10 @@ pub struct AlreadyRunning {
 pub async fn bind(data_dir: &Path) -> Result<UnixListener> {
     let path = data_dir.join(SOCKET_FILE);
     if UnixStream::connect(&path).await.is_ok() {
-        return Err(AlreadyRunning { data_dir: data_dir.display().to_string() }.into());
+        return Err(AlreadyRunning {
+            data_dir: data_dir.display().to_string(),
+        }
+        .into());
     }
     let _ = std::fs::remove_file(&path); // stale socket from a crashed daemon
     let listener = UnixListener::bind(&path)
@@ -151,7 +154,9 @@ pub async fn serve(
     data_dir: PathBuf,
 ) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else { return };
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
         if let Err(err) = handle_client(stream, &mesh, &events, &data_dir).await {
             eprintln!("kiem sync: control: {err:#}");
         }
@@ -168,7 +173,9 @@ async fn handle_client(
 ) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
-    let Some(first) = lines.next_line().await? else { return Ok(()) };
+    let Some(first) = lines.next_line().await? else {
+        return Ok(());
+    };
     // Attach before arming/dialing so no event can slip past the session.
     let mut rx = events.attach();
 
@@ -193,8 +200,11 @@ async fn handle_client(
             }
         },
         Ok(Request::Allow(_)) | Err(_) => {
-            send_line(&mut write, &Response::Error("expected a show or add request".into()))
-                .await?;
+            send_line(
+                &mut write,
+                &Response::Error("expected a show or add request".into()),
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -260,11 +270,21 @@ mod tests {
         let store = NoteStore::open_dir(dir).unwrap();
         let state = Arc::new(Mutex::new((store, SyncEngine::new())));
         let events = Arc::new(ControlEvents::default());
-        let mesh = Mesh::start(dir.to_owned(), state, Duration::from_millis(200), events.clone())
-            .await
-            .unwrap();
+        let mesh = Mesh::start(
+            dir.to_owned(),
+            state,
+            Duration::from_millis(200),
+            events.clone(),
+        )
+        .await
+        .unwrap();
         let listener = bind(dir).await.unwrap();
-        tokio::spawn(serve(listener, mesh.clone(), events.clone(), dir.to_owned()));
+        tokio::spawn(serve(
+            listener,
+            mesh.clone(),
+            events.clone(),
+            dir.to_owned(),
+        ));
         (mesh, events)
     }
 
@@ -290,11 +310,16 @@ mod tests {
         let (mesh, events) = start_daemon_side(dir.path()).await;
 
         let (mut lines, mut write) = connect(dir.path()).await;
-        send_line(&mut write, &Request::Show { window_secs: 60 }).await.unwrap();
+        send_line(&mut write, &Request::Show { window_secs: 60 })
+            .await
+            .unwrap();
         let Response::Ticket(_) = read_response(&mut lines).await else {
             panic!("expected a ticket first");
         };
-        assert!(mesh.pairing_window_remaining().is_some(), "show must arm the window");
+        assert!(
+            mesh.pairing_window_remaining().is_some(),
+            "show must arm the window"
+        );
 
         // A stranger knocks: the gate's blocking approve call must surface at
         // the client…
@@ -326,7 +351,9 @@ mod tests {
         let (mesh, _events) = start_daemon_side(dir.path()).await;
 
         let (mut lines, mut write) = connect(dir.path()).await;
-        send_line(&mut write, &Request::Show { window_secs: 60 }).await.unwrap();
+        send_line(&mut write, &Request::Show { window_secs: 60 })
+            .await
+            .unwrap();
         let Response::Ticket(_) = read_response(&mut lines).await else {
             panic!("expected a ticket first");
         };
@@ -352,7 +379,9 @@ mod tests {
         let (_mesh, _events) = start_daemon_side(dir.path()).await;
 
         let (mut lines, mut write) = connect(dir.path()).await;
-        send_line(&mut write, &Request::Add { ticket }).await.unwrap();
+        send_line(&mut write, &Request::Add { ticket })
+            .await
+            .unwrap();
         let Response::Added(id) = read_response(&mut lines).await else {
             panic!("expected an added ack");
         };

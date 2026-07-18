@@ -35,7 +35,12 @@ fn state_with_note() -> SharedState {
         .lock()
         .unwrap()
         .0
-        .insert_note(&NoteDoc::new_with("n1".into(), "# Hello\n\nfrom A", "did:a", TS.into()))
+        .insert_note(&NoteDoc::new_with(
+            "n1".into(),
+            "# Hello\n\nfrom A",
+            "did:a",
+            TS.into(),
+        ))
         .unwrap();
     state
 }
@@ -56,12 +61,22 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
         let state_a = state_with_note();
         let state_b = empty_state();
 
-        let mesh_b = Mesh::start(dir_b.path().into(), state_b.clone(), INTERVAL, Arc::new(ApproveAll))
-            .await
-            .unwrap();
-        let mesh_a = Mesh::start(dir_a.path().into(), state_a.clone(), INTERVAL, Arc::new(NoEvents))
-            .await
-            .unwrap();
+        let mesh_b = Mesh::start(
+            dir_b.path().into(),
+            state_b.clone(),
+            INTERVAL,
+            Arc::new(ApproveAll),
+        )
+        .await
+        .unwrap();
+        let mesh_a = Mesh::start(
+            dir_a.path().into(),
+            state_a.clone(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
         let (a_id, b_id) = (mesh_a.endpoint_id(), mesh_b.endpoint_id());
 
         mesh_b.arm_pairing(Duration::from_secs(60));
@@ -77,15 +92,24 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(synced, "note did not sync after an approved pairing");
-        assert!(knows(dir_b.path(), &a_id), "B did not record A as a trusted peer");
-        assert!(knows(dir_a.path(), &b_id), "A did not record B as a trusted peer");
+        assert!(
+            knows(dir_b.path(), &a_id),
+            "B did not record A as a trusted peer"
+        );
+        assert!(
+            knows(dir_a.path(), &b_id),
+            "A did not record B as a trusted peer"
+        );
         assert!(
             mesh_b.pairing_window_remaining().is_none(),
             "an approved pairing must consume the single-use window"
         );
     })
     .await;
-    assert!(outcome.is_ok(), "timed out — likely no local networking in this environment");
+    assert!(
+        outcome.is_ok(),
+        "timed out — likely no local networking in this environment"
+    );
 }
 
 /// A denied pairing (default-deny approval) trusts nobody and — crucially —
@@ -99,12 +123,22 @@ async fn a_denied_pairing_leaves_the_window_open() {
         let state_b = empty_state();
 
         // B arms a window but denies every prompt (NoEvents = default-deny).
-        let mesh_b = Mesh::start(dir_b.path().into(), state_b.clone(), INTERVAL, Arc::new(NoEvents))
-            .await
-            .unwrap();
-        let mesh_a = Mesh::start(dir_a.path().into(), state_a.clone(), INTERVAL, Arc::new(NoEvents))
-            .await
-            .unwrap();
+        let mesh_b = Mesh::start(
+            dir_b.path().into(),
+            state_b.clone(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
+        let mesh_a = Mesh::start(
+            dir_a.path().into(),
+            state_a.clone(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
         let a_id = mesh_a.endpoint_id();
 
         mesh_b.arm_pairing(Duration::from_secs(60));
@@ -112,14 +146,20 @@ async fn a_denied_pairing_leaves_the_window_open() {
         mesh_a.pair_dial(b_addr);
 
         tokio::time::sleep(Duration::from_secs(4)).await;
-        assert!(!knows(dir_b.path(), &a_id), "a denied peer must not be trusted");
+        assert!(
+            !knows(dir_b.path(), &a_id),
+            "a denied peer must not be trusted"
+        );
         assert!(
             mesh_b.pairing_window_remaining().is_some(),
             "a denied pairing must leave the window open for the real device"
         );
     })
     .await;
-    assert!(outcome.is_ok(), "timed out — likely no local networking in this environment");
+    assert!(
+        outcome.is_ok(),
+        "timed out — likely no local networking in this environment"
+    );
 }
 
 /// A ticket from a running mesh must carry a relay hint (via `ticket_online`),
@@ -128,9 +168,14 @@ async fn a_denied_pairing_leaves_the_window_open() {
 async fn running_mesh_ticket_carries_a_relay_hint() {
     let dir = tempfile::tempdir().unwrap();
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
-        let mesh = Mesh::start(dir.path().into(), empty_state(), INTERVAL, Arc::new(NoEvents))
-            .await
-            .unwrap();
+        let mesh = Mesh::start(
+            dir.path().into(),
+            empty_state(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
         let addr = kiem_sync::parse_ticket(&mesh.ticket_online().await).unwrap();
         assert!(
             addr.relay_urls().next().is_some(),
@@ -138,7 +183,10 @@ async fn running_mesh_ticket_carries_a_relay_hint() {
         );
     })
     .await;
-    assert!(outcome.is_ok(), "timed out reaching a relay — likely no networking in this environment");
+    assert!(
+        outcome.is_ok(),
+        "timed out reaching a relay — likely no networking in this environment"
+    );
 }
 
 /// With no window open, an unknown peer dialing in is refused before any sync:
@@ -154,24 +202,40 @@ async fn unknown_peer_is_refused_when_no_window_is_open() {
         let state_b = empty_state();
 
         // B: default-deny events and no armed window.
-        let mesh_b = Mesh::start(dir_b.path().into(), state_b.clone(), INTERVAL, Arc::new(NoEvents))
-            .await
-            .unwrap();
-        let mesh_a = Mesh::start(dir_a.path().into(), state_a.clone(), INTERVAL, Arc::new(NoEvents))
-            .await
-            .unwrap();
+        let mesh_b = Mesh::start(
+            dir_b.path().into(),
+            state_b.clone(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
+        let mesh_a = Mesh::start(
+            dir_a.path().into(),
+            state_a.clone(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
         let a_id = mesh_a.endpoint_id();
 
         let b_addr = kiem_sync::parse_ticket(&mesh_b.ticket()).unwrap();
         mesh_a.pair_dial(b_addr);
 
         tokio::time::sleep(Duration::from_secs(4)).await;
-        assert!(!knows(dir_b.path(), &a_id), "B trusted an unknown peer with no pairing window");
+        assert!(
+            !knows(dir_b.path(), &a_id),
+            "B trusted an unknown peer with no pairing window"
+        );
         assert!(
             state_b.lock().unwrap().0.get_note("n1").unwrap().is_none(),
             "a note synced to B despite the pairing being refused"
         );
     })
     .await;
-    assert!(outcome.is_ok(), "timed out — likely no local networking in this environment");
+    assert!(
+        outcome.is_ok(),
+        "timed out — likely no local networking in this environment"
+    );
 }

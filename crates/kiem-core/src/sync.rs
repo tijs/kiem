@@ -82,7 +82,9 @@ impl SyncEngine {
         let message = if let Some(doc) = self.pending.get_mut(doc_id) {
             doc.sync().generate_sync_message(state)
         } else if let Some(bytes) = stored_bytes {
-            load_doc(doc_id, &bytes)?.sync().generate_sync_message(state)
+            load_doc(doc_id, &bytes)?
+                .sync()
+                .generate_sync_message(state)
         } else if doc_id == TOMBSTONES_DOC_ID {
             // The tombstone doc syncs even before any purge exists: an empty
             // document still yields an initial handshake message, which
@@ -233,16 +235,32 @@ mod tests {
     fn peers_with_independent_notes_end_up_with_all_of_them() {
         let (mut a, mut b) = (peer("a"), peer("b"));
         a.store
-            .insert_note(&NoteDoc::new_with("na".into(), "# From A", "did:a", TS.into()))
+            .insert_note(&NoteDoc::new_with(
+                "na".into(),
+                "# From A",
+                "did:a",
+                TS.into(),
+            ))
             .unwrap();
         b.store
-            .insert_note(&NoteDoc::new_with("nb".into(), "# From B", "did:b", TS.into()))
+            .insert_note(&NoteDoc::new_with(
+                "nb".into(),
+                "# From B",
+                "did:b",
+                TS.into(),
+            ))
             .unwrap();
 
         converge(&mut a, &mut b);
 
         for p in [&a, &b] {
-            let ids: Vec<String> = p.store.list_notes().unwrap().into_iter().map(|m| m.id).collect();
+            let ids: Vec<String> = p
+                .store
+                .list_notes()
+                .unwrap()
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
             assert_eq!(ids.len(), 2, "{} should have both notes", p.name);
         }
     }
@@ -263,8 +281,22 @@ mod tests {
             .unwrap();
         converge(&mut a, &mut b);
 
-        let body_a = a.store.get_note("n1").unwrap().unwrap().body.as_str().to_owned();
-        let body_b = b.store.get_note("n1").unwrap().unwrap().body.as_str().to_owned();
+        let body_a = a
+            .store
+            .get_note("n1")
+            .unwrap()
+            .unwrap()
+            .body
+            .as_str()
+            .to_owned();
+        let body_b = b
+            .store
+            .get_note("n1")
+            .unwrap()
+            .unwrap()
+            .body
+            .as_str()
+            .to_owned();
         assert_eq!(body_a, body_b, "peers must converge to identical bodies");
         assert!(body_a.contains("line from A") && body_a.contains("line from B"));
     }
@@ -294,7 +326,10 @@ mod tests {
 
         assert!(b.store.list_notes().unwrap().is_empty());
         assert_eq!(b.store.list_deleted().unwrap().len(), 1);
-        assert!(b.store.search("Bye", 10).unwrap().is_empty(), "trashed note left B's index");
+        assert!(
+            b.store.search("Bye", 10).unwrap().is_empty(),
+            "trashed note left B's index"
+        );
     }
 
     #[test]
@@ -303,13 +338,20 @@ mod tests {
         // converge (states are an optimization, not a correctness carrier).
         let (mut a, mut b) = (peer("a"), peer("b"));
         a.store
-            .insert_note(&NoteDoc::new_with("n1".into(), "# Resume", "did:a", TS.into()))
+            .insert_note(&NoteDoc::new_with(
+                "n1".into(),
+                "# Resume",
+                "did:a",
+                TS.into(),
+            ))
             .unwrap();
         converge(&mut a, &mut b);
 
         b.engine = SyncEngine::new(); // B "restarted"
         a.engine.forget_peer("b");
-        a.store.update_note("n1", "# Resume\n\nafter restart").unwrap();
+        a.store
+            .update_note("n1", "# Resume\n\nafter restart")
+            .unwrap();
         converge(&mut a, &mut b);
 
         assert!(b

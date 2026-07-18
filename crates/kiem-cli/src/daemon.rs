@@ -43,7 +43,9 @@ async fn run_async(opts: Options) -> Result<()> {
         Ok(listener) => Some(listener),
         Err(err) if err.is::<control::AlreadyRunning>() => return Err(err),
         Err(err) => {
-            eprintln!("kiem sync: {err:#}; running without a control socket — stop the daemon to pair");
+            eprintln!(
+                "kiem sync: {err:#}; running without a control socket — stop the daemon to pair"
+            );
             None
         }
     };
@@ -54,7 +56,12 @@ async fn run_async(opts: Options) -> Result<()> {
         .context("starting sync mesh")?;
     eprintln!("kiem sync: endpoint {} ready", mesh.endpoint_id());
     if let Some(listener) = listener {
-        tokio::spawn(control::serve(listener, mesh.clone(), events, opts.data_dir.clone()));
+        tokio::spawn(control::serve(
+            listener,
+            mesh.clone(),
+            events,
+            opts.data_dir.clone(),
+        ));
     }
 
     // Heartbeat: publish status every second, forever.
@@ -101,7 +108,10 @@ pub fn print_status(data_dir: &Path, as_json: bool) -> Result<()> {
     if stale {
         println!("daemon appears stopped (status is {age}s old)");
     }
-    println!("endpoint: {}", status["endpoint_id"].as_str().unwrap_or("?"));
+    println!(
+        "endpoint: {}",
+        status["endpoint_id"].as_str().unwrap_or("?")
+    );
     let peers = status["peers"].as_array().cloned().unwrap_or_default();
     if peers.is_empty() {
         println!("peers: none connected");

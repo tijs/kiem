@@ -13,7 +13,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use iroh::endpoint::{Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError};
+use iroh::endpoint::{
+    Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError,
+};
 use iroh::EndpointAddr;
 use kiem_core::store::NoteStore;
 use kiem_core::sync::{SyncEngine, SyncError};
@@ -51,7 +53,11 @@ pub enum SessionError {
     /// Length limits guard against garbage on the wire — a bad frame is an
     /// error, not an allocation.
     #[error("frame field too large: {field} is {len} bytes (max {max})")]
-    Oversized { field: &'static str, len: u32, max: u32 },
+    Oversized {
+        field: &'static str,
+        len: u32,
+        max: u32,
+    },
     #[error("doc id is not valid UTF-8")]
     BadDocId,
     #[error("sync error: {0}")]
@@ -175,13 +181,18 @@ async fn reader_loop(
 /// Wire format: `[doc_id_len][doc_id bytes][payload_len][payload bytes]`, all
 /// lengths big-endian u32. No control frames — iroh's handshake already
 /// authenticates the peer id. (Same framing the pre-iroh TCP daemon used.)
-async fn write_frame(send: &mut SendStream, doc_id: &str, payload: &[u8]) -> Result<(), SessionError> {
+async fn write_frame(
+    send: &mut SendStream,
+    doc_id: &str,
+    payload: &[u8],
+) -> Result<(), SessionError> {
     let id = doc_id.as_bytes();
     check_len("doc_id", id.len(), MAX_DOC_ID_LEN)?;
     check_len("payload", payload.len(), MAX_PAYLOAD_LEN)?;
     send.write_all(&(id.len() as u32).to_be_bytes()).await?;
     send.write_all(id).await?;
-    send.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+    send.write_all(&(payload.len() as u32).to_be_bytes())
+        .await?;
     send.write_all(payload).await?;
     Ok(())
 }
@@ -198,7 +209,11 @@ async fn read_frame(recv: &mut RecvStream) -> Result<(String, Vec<u8>), SessionE
     Ok((doc_id, payload))
 }
 
-async fn read_len(recv: &mut RecvStream, field: &'static str, max: u32) -> Result<u32, SessionError> {
+async fn read_len(
+    recv: &mut RecvStream,
+    field: &'static str,
+    max: u32,
+) -> Result<u32, SessionError> {
     let mut buf = [0u8; 4];
     recv.read_exact(&mut buf).await?;
     let len = u32::from_be_bytes(buf);

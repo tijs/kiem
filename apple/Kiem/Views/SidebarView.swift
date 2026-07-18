@@ -23,7 +23,8 @@ struct SidebarView: View {
                     SidebarRow(
                         title: filter.title,
                         systemImage: filter.systemImage,
-                        count: model.filterCounts[filter]
+                        count: model.filterCounts[filter],
+                        onDropNotes: dropAction(for: filter)
                     )
                     .tag(SidebarSelection.filter(filter))
                     .contextMenu {
@@ -42,7 +43,8 @@ struct SidebarView: View {
                         SidebarRow(
                             title: KiemModel.projectName(entry.tag),
                             systemImage: "folder",
-                            count: Int(entry.count)
+                            count: Int(entry.count),
+                            onDropNotes: { model.addTag($0, tag: entry.tag) }
                         )
                         .tag(SidebarSelection.project(entry.tag))
                         .contextMenu {
@@ -60,7 +62,8 @@ struct SidebarView: View {
                         SidebarRow(
                             title: entry.tag,
                             systemImage: "number",
-                            count: Int(entry.count)
+                            count: Int(entry.count),
+                            onDropNotes: { model.addTag($0, tag: entry.tag) }
                         )
                         .tag(SidebarSelection.tag(entry.tag))
                     }
@@ -69,14 +72,30 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
     }
+
+    /// Drop behavior per smart filter — the drag mirror of the right-click
+    /// menu: Trash trashes, Pinned pins; the query-shaped filters (Todo,
+    /// Today, Untagged) take no drops.
+    private func dropAction(for filter: SmartFilter) -> ((Set<String>) -> Void)? {
+        switch filter {
+        case .trash: { model.trashNotes($0) }
+        case .pinned: { model.setPinned($0, pinned: true) }
+        case .todo, .today, .untagged: nil
+        }
+    }
 }
 
-/// A sidebar row: an icon-labelled title with an optional trailing count. The
-/// count is hidden when zero so empty filters stay quiet.
+/// A sidebar row: an icon-labelled title with an optional trailing count (hidden
+/// when zero so empty filters stay quiet). With `onDropNotes` set, the row
+/// accepts note drags from the list (payload: newline-joined note ids) and
+/// highlights while targeted.
 private struct SidebarRow: View {
     let title: String
     let systemImage: String
     let count: Int?
+    var onDropNotes: ((Set<String>) -> Void)?
+
+    @State private var isDropTargeted = false
 
     var body: some View {
         HStack {
@@ -88,5 +107,18 @@ private struct SidebarRow: View {
                     .monospacedDigit()
             }
         }
+        .dropDestination(for: String.self) { payloads, _ in
+            guard let onDropNotes else { return false }
+            let ids = Set(payloads.flatMap { $0.split(separator: "\n").map(String.init) })
+            guard !ids.isEmpty else { return false }
+            onDropNotes(ids)
+            return true
+        } isTargeted: { targeted in
+            isDropTargeted = targeted && onDropNotes != nil
+        }
+        .background(
+            isDropTargeted ? Color.accentColor.opacity(0.25) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 5)
+        )
     }
 }

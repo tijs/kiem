@@ -4,7 +4,10 @@
 //! not part of the cross-language derivation contract mirrored by Pulp —
 //! though they share its lexical rules via `super::` helpers.
 
-use super::{parse_checkbox_line, trim_horizontal_ws};
+use super::{
+    excluded_code_ranges, is_horizontal_ws, overlaps_any, parse_checkbox_line, tag_regex,
+    trim_horizontal_ws,
+};
 
 /// A Markdown task-list item parsed from a note body. `index` is its 0-based
 /// position among all checkbox lines in the body — its stable address for
@@ -28,7 +31,11 @@ pub fn extract_todo_items(body: &str) -> Vec<TodoItem> {
     let mut items = Vec::new();
     for line in body.split('\n') {
         if let Some((_, checked, text)) = parse_checkbox_line(line) {
-            items.push(TodoItem { index: items.len(), text, checked });
+            items.push(TodoItem {
+                index: items.len(),
+                text,
+                checked,
+            });
         }
     }
     items
@@ -115,6 +122,66 @@ pub fn append_todo(body: &str, text: &str) -> String {
     lines.join("\n")
 }
 
+/// Remove every parsed occurrence of `tag` while leaving lookalikes and tags in
+/// code untouched. A standalone tag line is removed whole; inline removal also
+/// consumes one adjacent space so prose does not gain a double space.
+pub fn remove_tag(body: &str, tag: &str) -> String {
+    let excluded = excluded_code_ranges(body);
+    let mut ranges = Vec::new();
+    for captures in tag_regex().captures_iter(body) {
+        let (Some(whole), Some(name)) = (captures.get(0), captures.get(1)) else {
+            continue;
+        };
+        if name.as_str() != tag {
+            continue;
+        }
+        let preceded_ok = body[..whole.start()]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        if !preceded_ok || overlaps_any(whole.start(), whole.end(), &excluded) {
+            continue;
+        }
+
+        let line_start = body[..whole.start()].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = body[whole.end()..]
+            .find('\n')
+            .map_or(body.len(), |i| whole.end() + i);
+        let line = body[line_start..line_end]
+            .strip_suffix('\r')
+            .unwrap_or(&body[line_start..line_end]);
+        let (mut start, mut end) = (whole.start(), whole.end());
+        if line.trim_matches(is_horizontal_ws) == whole.as_str() {
+            start = line_start;
+            end = (line_end + usize::from(line_end < body.len())).min(body.len());
+        } else if let Some(c) = body[end..].chars().next().filter(|c| is_horizontal_ws(*c)) {
+            end += c.len_utf8();
+        } else if let Some(c) = body[..start]
+            .chars()
+            .next_back()
+            .filter(|c| is_horizontal_ws(*c))
+        {
+            start -= c.len_utf8();
+        }
+        ranges.push((start, end));
+    }
+
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in ranges {
+        match merged.last_mut() {
+            Some((_, previous_end)) if start <= *previous_end => {
+                *previous_end = (*previous_end).max(end);
+            }
+            _ => merged.push((start, end)),
+        }
+    }
+    let mut out = body.to_string();
+    for (start, end) in merged.into_iter().rev() {
+        out.replace_range(start..end, "");
+    }
+    out
+}
+
 /// A text edit expressed in **Unicode scalar** units (`char` counts), the unit
 /// Automerge's text sequence indexes by. Deliberately *not* bytes: feeding byte
 /// offsets to Automerge corrupts any text past a multi-byte character (the
@@ -158,7 +225,11 @@ pub fn body_splice(old: &str, new: &str) -> Option<BodySplice> {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum LineError {
     #[error("line range {start}..={end} is out of range (note has {count} line(s))")]
-    OutOfRange { start: usize, end: usize, count: usize },
+    OutOfRange {
+        start: usize,
+        end: usize,
+        count: usize,
+    },
     #[error("line range {start}..={end} is inverted")]
     Inverted { start: usize, end: usize },
 }
@@ -166,13 +237,22 @@ pub enum LineError {
 /// Replace the 1-based inclusive line range `start..=end` of `body` with
 /// `replacement` (which may be empty to delete the lines, or span several
 /// lines). Line splitting is on `\n`; a trailing newline is preserved.
-pub fn replace_lines(body: &str, start: usize, end: usize, replacement: &str) -> Result<String, LineError> {
+pub fn replace_lines(
+    body: &str,
+    start: usize,
+    end: usize,
+    replacement: &str,
+) -> Result<String, LineError> {
     if start == 0 || end == 0 || start > end {
         return Err(LineError::Inverted { start, end });
     }
     let lines: Vec<&str> = body.split('\n').collect();
     if end > lines.len() {
-        return Err(LineError::OutOfRange { start, end, count: lines.len() });
+        return Err(LineError::OutOfRange {
+            start,
+            end,
+            count: lines.len(),
+        });
     }
     let mut out: Vec<&str> = Vec::with_capacity(lines.len());
     out.extend_from_slice(&lines[..start - 1]);
@@ -193,10 +273,31 @@ mod tests {
         let body = "# T\n- [ ] first\n- [x] second\nprose\n  - [ ] indented #tag";
         let items = extract_todo_items(body);
         assert_eq!(items.len(), 3);
-        assert_eq!(items[0], TodoItem { index: 0, text: "first".into(), checked: false });
-        assert_eq!(items[1], TodoItem { index: 1, text: "second".into(), checked: true });
+        assert_eq!(
+            items[0],
+            TodoItem {
+                index: 0,
+                text: "first".into(),
+                checked: false
+            }
+        );
+        assert_eq!(
+            items[1],
+            TodoItem {
+                index: 1,
+                text: "second".into(),
+                checked: true
+            }
+        );
         // Indented item keeps its index; inline text (incl. #tag) preserved.
-        assert_eq!(items[2], TodoItem { index: 2, text: "indented #tag".into(), checked: false });
+        assert_eq!(
+            items[2],
+            TodoItem {
+                index: 2,
+                text: "indented #tag".into(),
+                checked: false
+            }
+        );
     }
 
     #[test]
@@ -214,7 +315,10 @@ mod tests {
         let out = set_todo_checked(body, 1, true).unwrap();
         assert_eq!(out, "- [ ] a\n- [x] b\n- [ ] c");
         let items = extract_todo_items(&out);
-        assert_eq!((items[0].checked, items[1].checked, items[2].checked), (false, true, false));
+        assert_eq!(
+            (items[0].checked, items[1].checked, items[2].checked),
+            (false, true, false)
+        );
     }
 
     #[test]
@@ -241,6 +345,19 @@ mod tests {
     }
 
     #[test]
+    fn remove_tag_is_exact_and_code_aware() {
+        let body = "# T\ntext #work here\n#work\n#work #work\n`#work`\n```\n#work\n```\n#worker";
+        let out = remove_tag(body, "work");
+        assert_eq!(out, "# T\ntext here\n\n`#work`\n```\n#work\n```\n#worker");
+        assert_eq!(super::super::extract_tags(&out), vec!["worker"]);
+    }
+
+    #[test]
+    fn remove_tag_handles_a_final_crlf_line() {
+        assert_eq!(remove_tag("body\r\n#proj/x", "proj/x"), "body\r\n");
+    }
+
+    #[test]
     fn body_splice_positions_are_scalar_counts_not_bytes() {
         // The whole point: positions must count chars, so a multi-byte prefix
         // does not shift them (the autosurgeon byte-offset bug).
@@ -258,13 +375,29 @@ mod tests {
     #[test]
     fn replace_lines_replaces_deletes_and_validates() {
         let body = "# T\n- [ ] a\n- [ ] b\n- [ ] c";
-        assert_eq!(replace_lines(body, 3, 3, "- [x] b").unwrap(), "# T\n- [ ] a\n- [x] b\n- [ ] c");
+        assert_eq!(
+            replace_lines(body, 3, 3, "- [x] b").unwrap(),
+            "# T\n- [ ] a\n- [x] b\n- [ ] c"
+        );
         // Multi-line replacement.
-        assert_eq!(replace_lines(body, 2, 2, "- [ ] a1\n- [ ] a2").unwrap(), "# T\n- [ ] a1\n- [ ] a2\n- [ ] b\n- [ ] c");
+        assert_eq!(
+            replace_lines(body, 2, 2, "- [ ] a1\n- [ ] a2").unwrap(),
+            "# T\n- [ ] a1\n- [ ] a2\n- [ ] b\n- [ ] c"
+        );
         // Empty replacement deletes the range.
         assert_eq!(replace_lines(body, 2, 3, "").unwrap(), "# T\n- [ ] c");
-        assert_eq!(replace_lines(body, 5, 5, "x"), Err(LineError::OutOfRange { start: 5, end: 5, count: 4 }));
-        assert_eq!(replace_lines(body, 0, 1, "x"), Err(LineError::Inverted { start: 0, end: 1 }));
+        assert_eq!(
+            replace_lines(body, 5, 5, "x"),
+            Err(LineError::OutOfRange {
+                start: 5,
+                end: 5,
+                count: 4
+            })
+        );
+        assert_eq!(
+            replace_lines(body, 0, 1, "x"),
+            Err(LineError::Inverted { start: 0, end: 1 })
+        );
     }
 
     #[test]
@@ -283,7 +416,10 @@ mod tests {
         assert_eq!(out, "# T\n- [ ] a\n  - [x] B renamed\n- [ ] c\r\nprose");
         // CRLF item keeps its line ending and unchecked state; non-ASCII text survives.
         let out = set_todo_text(&out, 2, "café ☕").unwrap();
-        assert_eq!(out, "# T\n- [ ] a\n  - [x] B renamed\n- [ ] café ☕\r\nprose");
+        assert_eq!(
+            out,
+            "# T\n- [ ] a\n  - [x] B renamed\n- [ ] café ☕\r\nprose"
+        );
         assert_eq!(
             set_todo_text(body, 5, "x"),
             Err(TodoError::IndexOutOfRange { index: 5, count: 3 })
@@ -301,11 +437,21 @@ mod tests {
         // trailing tag block — so it renders as a real todo, grouped with the rest.
         let body = "## Roadmap\n- [ ] one\n- [ ] two\n\n#proj/kiem_app";
         let out = append_todo(body, "three");
-        assert_eq!(out, "## Roadmap\n- [ ] one\n- [ ] two\n- [ ] three\n\n#proj/kiem_app");
+        assert_eq!(
+            out,
+            "## Roadmap\n- [ ] one\n- [ ] two\n- [ ] three\n\n#proj/kiem_app"
+        );
         // A new checkbox is addressable as the next index.
         let items = extract_todo_items(&out);
         assert_eq!(items.len(), 3);
-        assert_eq!(items[2], TodoItem { index: 2, text: "three".into(), checked: false });
+        assert_eq!(
+            items[2],
+            TodoItem {
+                index: 2,
+                text: "three".into(),
+                checked: false
+            }
+        );
     }
 
     #[test]
@@ -313,7 +459,10 @@ mod tests {
         // Caller passed a full item line — must not become "- [ ] - [ ] x".
         assert_eq!(append_todo("- [ ] a", "- [ ] b"), "- [ ] a\n- [ ] b");
         // No existing checkbox: append at end of prose, exactly one new line.
-        assert_eq!(append_todo("just notes", "first"), "just notes\n- [ ] first");
+        assert_eq!(
+            append_todo("just notes", "first"),
+            "just notes\n- [ ] first"
+        );
         assert_eq!(append_todo("", "first"), "- [ ] first");
     }
 }

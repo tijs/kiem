@@ -109,7 +109,9 @@ pub fn extract_tags(body: &str) -> Vec<String> {
 /// ignores any other frontmatter content.
 pub fn parse_frontmatter_status(body: &str) -> (Option<String>, &str) {
     let mut lines = body.split_inclusive('\n');
-    let Some(first) = lines.next() else { return (None, body) };
+    let Some(first) = lines.next() else {
+        return (None, body);
+    };
     if line_content(first) != "---" {
         return (None, body);
     }
@@ -141,7 +143,8 @@ pub fn has_unchecked_todos(body: &str) -> bool {
     // start (after optional leading whitespace), NOT a bare `- [ ]` substring.
     // Otherwise a note that merely mentions `- [ ]` in prose or inline code
     // would falsely light up the Todo filter.
-    body.split('\n').any(|line| matches!(parse_checkbox_line(line), Some((_, false, _))))
+    body.split('\n')
+        .any(|line| matches!(parse_checkbox_line(line), Some((_, false, _))))
 }
 
 // MARK: - Internals
@@ -167,7 +170,9 @@ fn parse_checkbox_line(line: &str) -> Option<(usize, bool, String)> {
         b'x' | b'X' => true,
         _ => return None,
     };
-    let text = trimmed[5..].trim_start_matches(is_horizontal_ws).to_string();
+    let text = trimmed[5..]
+        .trim_start_matches(is_horizontal_ws)
+        .to_string();
     Some((lead + 3, checked, text))
 }
 
@@ -336,12 +341,18 @@ mod tests {
 
     #[test]
     fn info_string_fence_excludes_tags() {
-        assert_eq!(extract_tags("p\n```rust\nx #no\n```\ndone #yes"), vec!["yes"]);
+        assert_eq!(
+            extract_tags("p\n```rust\nx #no\n```\ndone #yes"),
+            vec!["yes"]
+        );
     }
 
     #[test]
     fn unterminated_fence_does_not_exclude() {
-        assert_eq!(extract_tags("p\n```\ntext #inside\nno close"), vec!["inside"]);
+        assert_eq!(
+            extract_tags("p\n```\ntext #inside\nno close"),
+            vec!["inside"]
+        );
     }
 
     #[test]
@@ -387,5 +398,4 @@ mod tests {
         assert!(has_unchecked_todos("- [ ] do it"));
         assert!(!has_unchecked_todos("- [x] done"));
     }
-
 }

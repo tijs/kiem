@@ -117,7 +117,10 @@ fn two_daemons_converge_and_stay_in_sync() {
     let dir_b = tempfile::tempdir().unwrap();
 
     // A note created on A before B even exists.
-    kiem_json(dir_a.path(), &["create", "--json", "--body", "# From A\n\nearly note #sync"]);
+    kiem_json(
+        dir_a.path(),
+        &["create", "--json", "--body", "# From A\n\nearly note #sync"],
+    );
 
     pair(dir_a.path(), dir_b.path());
     let _daemon_a = spawn_daemon(dir_a.path());
@@ -126,14 +129,20 @@ fn two_daemons_converge_and_stay_in_sync() {
     // AE5/AE2: B receives the pre-existing note after connecting.
     wait_for_notes(dir_b.path(), |notes| {
         notes.as_array().is_some_and(|a| {
-            a.iter().any(|n| n["title"] == "From A" && n["tags"][0] == "sync")
+            a.iter()
+                .any(|n| n["title"] == "From A" && n["tags"][0] == "sync")
         })
     });
 
     // Live edit while both daemons run: create on B, expect it on A.
-    kiem_json(dir_b.path(), &["create", "--json", "--body", "# From B\n\nlive note"]);
+    kiem_json(
+        dir_b.path(),
+        &["create", "--json", "--body", "# From B\n\nlive note"],
+    );
     wait_for_notes(dir_a.path(), |notes| {
-        notes.as_array().is_some_and(|a| a.iter().any(|n| n["title"] == "From B"))
+        notes
+            .as_array()
+            .is_some_and(|a| a.iter().any(|n| n["title"] == "From B"))
     });
 
     // Edit A's note on B; the merged body must flow back to A.
@@ -147,10 +156,21 @@ fn two_daemons_converge_and_stay_in_sync() {
         .as_str()
         .unwrap()
         .to_owned();
-    kiem_json(dir_b.path(), &["edit", &id, "--json", "--body", "# From A\n\nedited on B #sync"]);
+    kiem_json(
+        dir_b.path(),
+        &[
+            "edit",
+            &id,
+            "--json",
+            "--body",
+            "# From A\n\nedited on B #sync",
+        ],
+    );
     wait_for_notes(dir_a.path(), |_| {
         let shown = kiem_json(dir_a.path(), &["show", &id, "--json"]);
-        shown["body"].as_str().is_some_and(|b| b.contains("edited on B"))
+        shown["body"]
+            .as_str()
+            .is_some_and(|b| b.contains("edited on B"))
     });
 
     // Both daemons report each other as connected. The status file is
@@ -162,7 +182,10 @@ fn two_daemons_converge_and_stay_in_sync() {
             if status["peers"].as_array().is_some_and(|p| p.len() == 1) {
                 break;
             }
-            assert!(Instant::now() < deadline, "peer never showed up in {status}");
+            assert!(
+                Instant::now() < deadline,
+                "peer never showed up in {status}"
+            );
             std::thread::sleep(POLL);
         }
     }

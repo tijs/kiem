@@ -24,6 +24,13 @@ uniffi::setup_scaffolding!();
 mod records;
 pub use records::*;
 
+/// Hears `(done, total)` after each note/file of an export/import, so the
+/// app can draw a determinate progress bar. Called on the transfer's thread.
+#[uniffi::export(with_foreign)]
+pub trait TransferProgress: Send + Sync {
+    fn on_progress(&self, done: u32, total: u32);
+}
+
 /// Forwarded to Swift as sync mesh peers connect/disconnect, and to ask the
 /// user to approve an incoming pairing.
 #[uniffi::export(with_foreign)]
@@ -118,6 +125,12 @@ impl KiemStore {
         self.with(|store, _| Ok(store.delete_note(&id)?.into()))
     }
 
+    /// Add a body-derived hashtag (no leading `#`) — the app's drag-to-tag
+    /// and add-to-project actions. No-op if the body already carries it.
+    pub fn add_tag(&self, id: String, tag: String) -> Result<NoteMetadata, KiemError> {
+        self.with(|store, _| Ok(store.add_tag(&id, &tag)?.into()))
+    }
+
     pub fn restore_note(&self, id: String) -> Result<NoteMetadata, KiemError> {
         self.with(|store, _| Ok(store.restore_note(&id)?.into()))
     }
@@ -160,7 +173,10 @@ impl KiemStore {
             Ok(store
                 .list_tags()?
                 .into_iter()
-                .map(|(tag, count)| TagCount { tag, count: count as u64 })
+                .map(|(tag, count)| TagCount {
+                    tag,
+                    count: count as u64,
+                })
                 .collect())
         })
     }
@@ -208,7 +224,11 @@ impl KiemStore {
         index: u32,
         checked: bool,
     ) -> Result<NoteMetadata, KiemError> {
-        self.with(|store, _| Ok(store.set_todo_checked(&note_id, index as usize, checked)?.into()))
+        self.with(|store, _| {
+            Ok(store
+                .set_todo_checked(&note_id, index as usize, checked)?
+                .into())
+        })
     }
 
     /// Replace the text of the todo at `index` within note `note_id`, persisting the edit.
@@ -223,27 +243,56 @@ impl KiemStore {
 
     /// Export every project's notes as Markdown files under `dir` — one
     /// folder per project, one file per note. Returns written / skipped
-    /// (notes without a project) counts.
-    pub fn export_notes(&self, dir: String) -> Result<TransferSummary, KiemError> {
+    /// (notes without a project) counts; `progress` hears `(done, total)`
+    /// after each note.
+    pub fn export_notes(
+        &self,
+        dir: String,
+        progress: Arc<dyn TransferProgress>,
+    ) -> Result<TransferSummary, KiemError> {
         self.with(|store, _| {
-            let (written, skipped) =
-                kiem_core::transfer::export_all(store, std::path::Path::new(&dir))?;
-            Ok(TransferSummary { transferred: written as u32, skipped: skipped as u32 })
+            let (written, skipped) = kiem_core::transfer::export_all_with_progress(
+                store,
+                std::path::Path::new(&dir),
+                &mut |done, total| progress.on_progress(done as u32, total as u32),
+            )?;
+            Ok(TransferSummary {
+                transferred: written as u32,
+                skipped: skipped as u32,
+            })
         })
     }
 
-    /// Import a directory of Markdown files as notes (a folder is a project:
-    /// subfolders each, or the flat folder itself). Returns created / skipped
-    /// (already-present duplicates) counts.
+    /// Import a directory of Markdown files as notes. With
+    /// `folders_as_projects`, a folder is a project (subfolders each, or the
+    /// flat folder itself); without it no project is assigned — notes keep
+    /// only the tags already in their bodies. Returns created / skipped
+    /// (already-present duplicates) counts; `progress` hears `(done, total)`
+    /// after each file.
     pub fn import_notes(
         &self,
         dir: String,
         author_did: String,
+        folders_as_projects: bool,
+        progress: Arc<dyn TransferProgress>,
     ) -> Result<TransferSummary, KiemError> {
+        let source = if folders_as_projects {
+            kiem_core::transfer::ProjectSource::Folders
+        } else {
+            kiem_core::transfer::ProjectSource::None
+        };
         self.with(|store, _| {
-            let (created, skipped) =
-                kiem_core::transfer::import(store, std::path::Path::new(&dir), &author_did, None)?;
-            Ok(TransferSummary { transferred: created.len() as u32, skipped: skipped as u32 })
+            let (created, skipped) = kiem_core::transfer::import_with_progress(
+                store,
+                std::path::Path::new(&dir),
+                &author_did,
+                source,
+                &mut |done, total| progress.on_progress(done as u32, total as u32),
+            )?;
+            Ok(TransferSummary {
+                transferred: created.len() as u32,
+                skipped: skipped as u32,
+            })
         })
     }
 
@@ -267,12 +316,18 @@ impl KiemStore {
     /// peers see on the mesh, and the value to pass as `author_did` when
     /// creating notes. Created on first use, persisted in the data dir.
     pub fn device_did(&self) -> Result<String, KiemError> {
-        Ok(kiem_sync::device_id(&self.data_dir).map_err(sync_err)?.to_string())
+        Ok(kiem_sync::device_id(&self.data_dir)
+            .map_err(sync_err)?
+            .to_string())
     }
 
     /// Binds this device's identity, accepts incoming connections, and dials
     /// every known peer. No-op if already running.
-    pub fn start_sync(&self, interval_ms: u64, events: Arc<dyn PeerEvents>) -> Result<(), KiemError> {
+    pub fn start_sync(
+        &self,
+        interval_ms: u64,
+        events: Arc<dyn PeerEvents>,
+    ) -> Result<(), KiemError> {
         let mut sync = self.sync.lock().expect("sync lock poisoned");
         if sync.is_some() {
             return Ok(());
@@ -325,7 +380,9 @@ impl KiemStore {
     /// isn't running.
     pub fn arm_pairing(&self, window_secs: u64) {
         if let Some(handle) = self.sync.lock().expect("sync lock poisoned").as_ref() {
-            handle.mesh.arm_pairing(std::time::Duration::from_secs(window_secs));
+            handle
+                .mesh
+                .arm_pairing(std::time::Duration::from_secs(window_secs));
         }
     }
 
@@ -377,7 +434,9 @@ impl KiemStore {
 }
 
 fn sync_err(err: impl std::fmt::Display) -> KiemError {
-    KiemError::Sync { message: err.to_string() }
+    KiemError::Sync {
+        message: err.to_string(),
+    }
 }
 
 fn into_meta(metas: Vec<kiem_core::note::NoteMetadata>) -> Vec<NoteMetadata> {
@@ -407,7 +466,10 @@ mod tests {
         assert_eq!(note.body, "# Bridge\n\nhello #ffi");
 
         assert_eq!(store.list_notes().unwrap().len(), 1);
-        assert_eq!(store.search("hello".into(), 10).unwrap()[0].note_id, meta.id);
+        assert_eq!(
+            store.search("hello".into(), 10).unwrap()[0].note_id,
+            meta.id
+        );
         assert_eq!(store.get_tags().unwrap()[0].tag, "ffi");
 
         store.delete_note(meta.id.clone()).unwrap();
@@ -419,7 +481,10 @@ mod tests {
     fn project_todos_aggregate_and_toggle_through_the_ffi_surface() {
         let (_dir, store) = open_temp();
         let note = store
-            .create_note("# Tasks #proj/demo\n- [ ] a\n- [ ] b".into(), "did:key:test".into())
+            .create_note(
+                "# Tasks #proj/demo\n- [ ] a\n- [ ] b".into(),
+                "did:key:test".into(),
+            )
             .unwrap();
 
         let todos = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
@@ -432,38 +497,62 @@ mod tests {
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].text, "b");
 
-        store.set_todo_text(note.id.clone(), 1, "b renamed".into()).unwrap();
+        store
+            .set_todo_text(note.id.clone(), 1, "b renamed".into())
+            .unwrap();
         let renamed = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
         assert_eq!(renamed.len(), 1);
         assert_eq!(renamed[0].text, "b renamed");
     }
 
+    /// Progress relay stub: transfers need one; these tests assert counts only.
+    struct NoProgress;
+    impl TransferProgress for NoProgress {
+        fn on_progress(&self, _done: u32, _total: u32) {}
+    }
+
     #[test]
     fn notes_export_and_import_through_the_ffi_surface() {
         let (_dir, store) = open_temp();
-        store.create_note("# A\n\n- [ ] alpha\n\n#proj/demo".into(), "t".into()).unwrap();
+        store
+            .create_note("# A\n\n- [ ] alpha\n\n#proj/demo".into(), "t".into())
+            .unwrap();
         store.create_note("# Unfiled".into(), "t".into()).unwrap();
 
         let out = tempfile::tempdir().unwrap();
         let dir = out.path().to_string_lossy().into_owned();
-        let exported = store.export_notes(dir.clone()).unwrap();
+        let exported = store
+            .export_notes(dir.clone(), Arc::new(NoProgress))
+            .unwrap();
         assert_eq!((exported.transferred, exported.skipped), (1, 1));
 
         let (_dir2, fresh) = open_temp();
-        let imported = fresh.import_notes(dir.clone(), "t".into()).unwrap();
+        let imported = fresh
+            .import_notes(dir.clone(), "t".into(), true, Arc::new(NoProgress))
+            .unwrap();
         assert_eq!((imported.transferred, imported.skipped), (1, 0));
         assert_eq!(fresh.list_by_tag("proj/demo".into()).unwrap()[0].title, "A");
         // Re-import is a no-op.
-        let again = fresh.import_notes(dir, "t".into()).unwrap();
+        let again = fresh
+            .import_notes(dir, "t".into(), true, Arc::new(NoProgress))
+            .unwrap();
         assert_eq!((again.transferred, again.skipped), (0, 1));
     }
 
     #[test]
     fn transfer_errors_map_to_the_transfer_variant() {
         let (_dir, store) = open_temp();
-        match store.import_notes("/nonexistent-kiem-import-dir".into(), "t".into()) {
+        match store.import_notes(
+            "/nonexistent-kiem-import-dir".into(),
+            "t".into(),
+            true,
+            Arc::new(NoProgress),
+        ) {
             Err(KiemError::Transfer { message }) => {
-                assert!(message.contains("resolving directory"), "unhelpful message: {message}");
+                assert!(
+                    message.contains("resolving directory"),
+                    "unhelpful message: {message}"
+                );
             }
             other => panic!("expected Transfer, got {other:?}"),
         }
@@ -483,21 +572,30 @@ mod tests {
         use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(KiemStore::open(dir.path().to_string_lossy().into_owned()).unwrap());
-        let meta = store.create_note("# Threads".into(), "did:t".into()).unwrap();
+        let meta = store
+            .create_note("# Threads".into(), "did:t".into())
+            .unwrap();
 
         let handles: Vec<_> = (0..8)
             .map(|i| {
                 let store = store.clone();
                 let id = meta.id.clone();
                 std::thread::spawn(move || {
-                    store.update_note(id, format!("# Threads\n\nedit {i}")).unwrap();
+                    store
+                        .update_note(id, format!("# Threads\n\nedit {i}"))
+                        .unwrap();
                 })
             })
             .collect();
         for h in handles {
             h.join().unwrap();
         }
-        assert!(store.get_note(meta.id).unwrap().unwrap().body.contains("edit"));
+        assert!(store
+            .get_note(meta.id)
+            .unwrap()
+            .unwrap()
+            .body
+            .contains("edit"));
     }
 
     struct NullEvents;
@@ -514,7 +612,8 @@ mod tests {
         let (_dir_a, a) = open_temp();
         let (_dir_b, b) = open_temp();
 
-        a.create_note("# Mesh\n\nvia ffi sync".into(), "did:a".into()).unwrap();
+        a.create_note("# Mesh\n\nvia ffi sync".into(), "did:a".into())
+            .unwrap();
 
         let ticket_a = a.pair_ticket().unwrap();
         let ticket_b = b.pair_ticket().unwrap();
@@ -534,7 +633,10 @@ mod tests {
             if b.list_notes().unwrap().iter().any(|n| n.title == "Mesh") {
                 break;
             }
-            assert!(std::time::Instant::now() < deadline, "note never synced over the FFI mesh");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "note never synced over the FFI mesh"
+            );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 

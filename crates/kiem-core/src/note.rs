@@ -176,12 +176,18 @@ mod tests {
     #[test]
     fn update_body_rederives_metadata_and_roundtrips() {
         let mut note = sample();
-        note.update_body_at("# Chores\n\nMow lawn #home #errands", "2026-06-12T11:00:00Z".into());
+        note.update_body_at(
+            "# Chores\n\nMow lawn #home #errands",
+            "2026-06-12T11:00:00Z".into(),
+        );
         assert_eq!(note.metadata.title, "Chores");
         assert_eq!(note.metadata.tags, vec!["home", "errands"]);
         assert_eq!(note.metadata.modified_at, "2026-06-12T11:00:00Z");
         assert_eq!(note.metadata.created_at, TS, "created_at must not move");
-        assert_eq!(roundtrip(&note).body.as_str(), "# Chores\n\nMow lawn #home #errands");
+        assert_eq!(
+            roundtrip(&note).body.as_str(),
+            "# Chores\n\nMow lawn #home #errands"
+        );
     }
 
     #[test]
@@ -236,7 +242,10 @@ mod tests {
         base.merge(&mut fork).unwrap();
         let merged: NoteDoc = hydrate(&base).unwrap();
         assert!(merged.metadata.pinned);
-        assert_eq!(merged.body.as_str(), "# Groceries\n\nBuy milk and eggs #errands");
+        assert_eq!(
+            merged.body.as_str(),
+            "# Groceries\n\nBuy milk and eggs #errands"
+        );
     }
 
     #[test]
@@ -296,7 +305,8 @@ mod tests {
         // predates the field — i.e. every real note a user had before this
         // release.
         let loaded = AutoCommit::load(&bytes).expect("load");
-        let hydrated: NoteDoc = hydrate(&loaded).expect("hydrate must not error on a missing status key");
+        let hydrated: NoteDoc =
+            hydrate(&loaded).expect("hydrate must not error on a missing status key");
         assert_eq!(hydrated.metadata.status, None);
         assert_eq!(hydrated.metadata.title, "Before status existed");
     }

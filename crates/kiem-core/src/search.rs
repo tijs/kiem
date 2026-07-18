@@ -93,7 +93,11 @@ impl SearchIndex {
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
-        Ok(SearchIndex { index, reader, fields })
+        Ok(SearchIndex {
+            index,
+            reader,
+            fields,
+        })
     }
 
     /// Index (or re-index) one note. Delete-by-id + add + commit.
@@ -272,7 +276,8 @@ mod tests {
     fn rebuild_replaces_index_contents() {
         let mut idx = index_with(&[("stale", "# Old\n\nstale content")]);
         let m = meta("fresh", "# New\n\nfresh content");
-        idx.rebuild([(&m, "# New\n\nfresh content")].into_iter()).unwrap();
+        idx.rebuild([(&m, "# New\n\nfresh content")].into_iter())
+            .unwrap();
         assert!(idx.search("stale", 10).unwrap().is_empty());
         assert_eq!(idx.search("fresh", 10).unwrap()[0].note_id, "fresh");
     }

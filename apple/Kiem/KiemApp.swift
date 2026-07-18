@@ -8,7 +8,6 @@ struct KiemApp: App {
     @State private var startupError: String?
     @State private var cliInstallMessage: String?
     @State private var cliShadowPath: String?
-    @State private var transferMessage: String?
     private static let cliShadowDismissedKey = "kiem.cliShadowWarningDismissed"
 
     var body: some Scene {
@@ -36,17 +35,6 @@ struct KiemApp: App {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(cliInstallMessage ?? "")
-            }
-            .alert(
-                "Import & Export",
-                isPresented: Binding(
-                    get: { transferMessage != nil },
-                    set: { if !$0 { transferMessage = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(transferMessage ?? "")
             }
             .alert(
                 "Another kiem CLI is shadowing the app",
@@ -79,18 +67,19 @@ struct KiemApp: App {
             CommandGroup(replacing: .importExport) {
                 Button("Import Notes from Folder…") {
                     guard let model,
-                          let dir = Self.pickFolder(prompt: "Import", canCreate: false)
+                          let dir = Self.pickFolder(prompt: "Import", canCreate: false),
+                          let foldersAsProjects = Self.askImportMode(folder: dir)
                     else { return }
-                    transferMessage = model.importNotes(from: dir)
+                    model.importNotes(from: dir, foldersAsProjects: foldersAsProjects)
                 }
-                .disabled(model == nil)
+                .disabled(model == nil || model?.activeTransfer != nil)
                 Button("Export All Notes…") {
                     guard let model,
                           let dir = Self.pickFolder(prompt: "Export", canCreate: true)
                     else { return }
-                    transferMessage = model.exportNotes(to: dir)
+                    model.exportNotes(to: dir)
                 }
-                .disabled(model == nil)
+                .disabled(model == nil || model?.activeTransfer != nil)
             }
             CommandGroup(after: .appInfo) {
                 Button("Install Command Line Tool…") {
@@ -120,6 +109,27 @@ struct KiemApp: App {
         panel.canCreateDirectories = canCreate
         panel.prompt = prompt
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    /// Whether folders should map to projects for this import: true = folders
+    /// are projects, false = plain notes keeping only their own tags (a
+    /// Bear/Obsidian dump isn't one big project), nil = cancelled.
+    private static func askImportMode(folder: URL) -> Bool? {
+        let alert = NSAlert()
+        alert.messageText = "Import “\(folder.lastPathComponent)”"
+        alert.informativeText = """
+            Treat folders as projects? Subfolders become projects, and \
+            top-level notes join a project named “\(folder.lastPathComponent)”. \
+            Or just import the notes, keeping only the tags they already contain.
+            """
+        alert.addButton(withTitle: "Folders Are Projects")
+        alert.addButton(withTitle: "Just Import Notes")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return true
+        case .alertSecondButtonReturn: return false
+        default: return nil
+        }
     }
 
     private func start() {

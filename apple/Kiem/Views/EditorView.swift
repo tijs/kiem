@@ -17,7 +17,13 @@ struct EditorView: View {
     @StateObject private var editorController = PulpEditorController()
 
     var body: some View {
-        if model.selectedNoteID == nil {
+        if model.selectedNoteIDs.count > 1 {
+            ContentUnavailableView(
+                "\(model.selectedNoteIDs.count) notes selected",
+                systemImage: "square.on.square",
+                description: Text("Right-click the list, or drag to a project, tag, Pinned, or Trash — actions apply to all of them.")
+            )
+        } else if model.selectedNoteID == nil {
             ContentUnavailableView(
                 "No note selected",
                 systemImage: "square.and.pencil",

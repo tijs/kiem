@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0-alpha.16 - 2026-07-18
+
+- Added: multi-select in the note list — ⌘-click/⇧-click select several notes, and every action works the same through right-click or drag-to-sidebar: drag to Trash or right-click > Move to Trash; drag onto a project or right-click > Add to Project; drag onto a tag to tag; drag onto Pinned or right-click > Pin. Restore in Trash, ⌫/⌘⌫, and the editor pane's "N notes selected" placeholder all follow the selection.
+- Added: `kiem bulk` safely applies tag, type, trash, and restore operations to notes selected by tag, project, repeated IDs, or stdin. Bulk changes support dry runs, require explicit confirmation, verify note versions, and commit atomically.
+- Fixed: importing a big folder no longer freezes the app — a 400-note import dropped from minutes to under a second (the duplicate check re-read every existing note per file, and every note paid its own database and search-index commit; imports now run as one transaction with one index rebuild). The app runs transfers in the background and shows a progress bar while they run.
+- Changed: importing no longer forces notes into projects. The app now asks: "Folders Are Projects" keeps the old behavior, "Just Import Notes" imports a plain dump (e.g. from Bear) with only the tags the notes already carry. The CLI equivalent is `kiem import --no-project`.
+
 ## 0.1.0-alpha.15 - 2026-07-18
 
 - Added: import/export in the macOS app — File > Import Notes from Folder… / Export All Notes… run the same folder-per-project Markdown exchange as the CLI (the logic moved into the shared core, so both surfaces are one implementation). A summary alert reports how many notes were transferred and skipped.

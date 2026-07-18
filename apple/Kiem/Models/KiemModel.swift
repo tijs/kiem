@@ -125,8 +125,22 @@ final class KiemModel {
         tag.hasPrefix(projectTagPrefix) ? String(tag.dropFirst(projectTagPrefix.count)) : tag
     }
 
+    /// The note list's (multi-)selection. The editor shows a note only when
+    /// exactly one is selected; bulk actions (context menu, drag to sidebar)
+    /// act on the whole set.
+    var selectedNoteIDs: Set<String> = [] {
+        didSet {
+            let oldSingle = oldValue.count == 1 ? oldValue.first : nil
+            if selectedNoteID != oldSingle { loadSelectedNote() }
+        }
+    }
+
+    /// The single open note — non-nil only when exactly one note is selected.
+    /// Setting it replaces the whole selection (the single-select flows:
+    /// create, todo-caption tap, restore-after-refresh).
     var selectedNoteID: String? {
-        didSet { loadSelectedNote() }
+        get { selectedNoteIDs.count == 1 ? selectedNoteIDs.first : nil }
+        set { selectedNoteIDs = newValue.map { [$0] } ?? [] }
     }
 
     /// Editor binding for the selected note. While editing, this is the
@@ -313,8 +327,8 @@ final class KiemModel {
         pendingRefreshTask?.cancel()
         pendingRefreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            self?.refresh()
+            guard !Task.isCancelled, let self, self.activeTransfer == nil else { return }
+            self.refresh()
         }
     }
 
@@ -342,8 +356,12 @@ final class KiemModel {
         // blanks the editor even though the note is intact in the store.
         guard let listed else { return }
         notes = listed
-        if let selected = selectedNoteID, !listed.contains(where: { $0.id == selected }) {
-            selectedNoteID = nil
+        // Prune selected notes that left the current view (trashed, filtered
+        // out, edited elsewhere) — for a single selection this also clears
+        // the editor via the selection didSet.
+        let visible = Set(listed.map(\.id))
+        if !selectedNoteIDs.isSubset(of: visible) {
+            selectedNoteIDs.formIntersection(visible)
         }
         refreshOpenTodos()
     }
@@ -440,34 +458,90 @@ final class KiemModel {
         selection = .project(tag)
     }
 
-    // ponytail: export/import run synchronously on the main actor holding the
-    // store+sync mutex — a huge folder beachballs and stalls sync rounds until
-    // done. Upgrade path when that gets real: Task.detached around the store
-    // call, summary hopped back to the main actor (the mutex makes it safe).
+    // MARK: Import / export (File menu)
 
-    /// Export every project's notes as Markdown files under `dir` (one folder
-    /// per project). Returns a human summary, or nil after reporting the error.
-    func exportNotes(to dir: URL) -> String? {
-        guard let summary = report({ try store.exportNotes(dir: dir.path) }) else { return nil }
-        var text = "Exported \(summary.transferred) notes to “\(dir.lastPathComponent)”."
-        if summary.skipped > 0 {
-            text += " Skipped \(summary.skipped) notes that aren’t in a project."
-        }
-        return text
+    /// A running import/export, for the modal progress sheet. `total` is 0
+    /// until the first progress callback arrives (indeterminate).
+    struct TransferActivity: Equatable {
+        var verb: String
+        var done = 0
+        var total = 0
     }
 
-    /// Import a folder of Markdown files as notes (a folder is a project:
-    /// subfolders each, or the flat folder itself). Returns a human summary,
-    /// or nil after reporting the error.
-    func importNotes(from dir: URL) -> String? {
-        guard let summary = report({ try store.importNotes(dir: dir.path, authorDid: authorDid) })
-        else { return nil }
-        refresh()
-        var text = "Imported \(summary.transferred) notes from “\(dir.lastPathComponent)”."
-        if summary.skipped > 0 {
-            text += " \(summary.skipped) were already present and were skipped."
+    /// Non-nil while an import or export runs — disables the menu items and
+    /// presents the progress sheet.
+    private(set) var activeTransfer: TransferActivity?
+    /// Success summary of the last finished transfer (drives its alert).
+    var transferMessage: String?
+
+    /// Export every project's notes as Markdown files under `dir` (one folder
+    /// per project), off the main actor with live progress.
+    func exportNotes(to dir: URL) {
+        runTransfer(verb: "Exporting", work: { [store] relay in
+            try store.exportNotes(dir: dir.path, progress: relay)
+        }, summary: { summary in
+            var text = "Exported \(summary.transferred) notes to “\(dir.lastPathComponent)”."
+            if summary.skipped > 0 {
+                text += " Skipped \(summary.skipped) notes that aren’t in a project."
+            }
+            return text
+        })
+    }
+
+    /// Import a folder of Markdown files as notes, off the main actor with
+    /// live progress. `foldersAsProjects` maps folders to projects (subfolders
+    /// each, or the flat folder itself); without it notes keep only the tags
+    /// already in their bodies (e.g. a Bear/Obsidian dump).
+    func importNotes(from dir: URL, foldersAsProjects: Bool) {
+        runTransfer(verb: "Importing", work: { [store, authorDid] relay in
+            try store.importNotes(
+                dir: dir.path,
+                authorDid: authorDid,
+                foldersAsProjects: foldersAsProjects,
+                progress: relay
+            )
+        }, summary: { summary in
+            var text = "Imported \(summary.transferred) notes from “\(dir.lastPathComponent)”."
+            if summary.skipped > 0 {
+                text += " \(summary.skipped) were already present and were skipped."
+            }
+            return text
+        })
+    }
+
+    /// One transfer at a time: run `work` on a background task (it holds the
+    /// store+sync lock — sync rounds stall until it finishes, by design),
+    /// stream progress into `activeTransfer`, then refresh and report the
+    /// summary or error back on the main actor.
+    private func runTransfer(
+        verb: String,
+        work: @escaping @Sendable (TransferProgressRelay) throws -> TransferSummary,
+        summary: @escaping @Sendable (TransferSummary) -> String
+    ) {
+        guard activeTransfer == nil else { return }
+        activeTransfer = TransferActivity(verb: verb)
+        let relay = TransferProgressRelay { [weak self] done, total in
+            Task { @MainActor in
+                guard var transfer = self?.activeTransfer else { return }
+                transfer.done = done
+                transfer.total = total
+                self?.activeTransfer = transfer
+            }
         }
-        return text
+        Task.detached {
+            let result = Result { try work(relay) }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.activeTransfer = nil
+                switch result {
+                case let .success(transferred):
+                    self.refresh()
+                    self.transferMessage = summary(transferred)
+                case let .failure(error):
+                    self.errorMessage = "\(error)"
+                }
+            }
+        }
     }
 
     /// `proj/<slug>` from a free-form name. Byte-for-byte mirror of the Rust
@@ -518,19 +592,57 @@ final class KiemModel {
     }
 
     func deleteNote(id: String) {
-        // Don't let a pending edit land in the note after it's trashed.
-        flushPendingEdit()
-        report { try store.deleteNote(id: id) }
-        if selectedNoteID == id {
-            selectedNoteID = nil
-        }
-        refresh()
+        trashNotes([id])
     }
 
     /// Restore a trashed note (undo a "Move to Trash").
     func restoreNote(id: String) {
-        report { try store.restoreNote(id: id) }
+        restoreNotes([id])
+    }
+
+    // MARK: Bulk actions (multi-select context menu + drag to sidebar)
+
+    /// Move notes to trash. One action for a single note or a selection.
+    func trashNotes(_ ids: Set<String>) {
+        // Don't let a pending edit land in a note after it's trashed.
+        flushPendingEdit()
+        for id in ids {
+            report { try store.deleteNote(id: id) }
+        }
+        selectedNoteIDs.subtract(ids)
         refresh()
+    }
+
+    /// Restore trashed notes (undo "Move to Trash").
+    func restoreNotes(_ ids: Set<String>) {
+        for id in ids {
+            report { try store.restoreNote(id: id) }
+        }
+        refresh()
+    }
+
+    /// Pin or unpin notes.
+    func setPinned(_ ids: Set<String>, pinned: Bool) {
+        for id in ids {
+            report { try store.setPinned(id: id, pinned: pinned) }
+        }
+        refresh()
+    }
+
+    /// Add a hashtag to notes — both "tag it" (plain tag) and "add to
+    /// project" (a `proj/<slug>` tag) are this one operation. Appends to the
+    /// body unless already present, so it's the same sync-safe body-update
+    /// path as typing the tag; the open note reloads to show it.
+    func addTag(_ ids: Set<String>, tag: String) {
+        // A pending edit flushed later would overwrite the tagged body.
+        flushPendingEdit()
+        for id in ids {
+            report { try store.addTag(id: id, tag: tag) }
+        }
+        refresh()
+        if let selected = selectedNoteID, ids.contains(selected) {
+            loadSelectedNote()
+        }
     }
 
     /// Editor change → schedule a debounced store write (Rust re-derives
@@ -590,6 +702,20 @@ final class KiemModel {
             errorMessage = "\(error)"
             return nil
         }
+    }
+}
+
+/// Forwards Rust transfer progress (delivered on the transfer's background
+/// thread) to the main actor. Holds only a @Sendable closure.
+final class TransferProgressRelay: TransferProgress, @unchecked Sendable {
+    private let update: @Sendable (Int, Int) -> Void
+
+    init(update: @escaping @Sendable (Int, Int) -> Void) {
+        self.update = update
+    }
+
+    func onProgress(done: UInt32, total: UInt32) {
+        update(Int(done), Int(total))
     }
 }
 

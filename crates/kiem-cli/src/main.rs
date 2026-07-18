@@ -7,6 +7,7 @@
 //! H1 heading line.
 
 mod args;
+mod bulk;
 mod control;
 mod daemon;
 mod pair;
@@ -89,12 +90,20 @@ fn run() -> Result<()> {
                 print_json(&serde_json::to_value(&notes)?)?;
             } else {
                 for m in &notes {
-                    println!("{}  {}  {}{}", m.id, m.modified_at, display_title(m), tag_suffix(m));
+                    println!(
+                        "{}  {}  {}{}",
+                        m.id,
+                        m.modified_at,
+                        display_title(m),
+                        tag_suffix(m)
+                    );
                 }
             }
         }
         Command::Show { id } => {
-            let note = store.get_note(&id)?.with_context(|| format!("note not found: {id}"))?;
+            let note = store
+                .get_note(&id)?
+                .with_context(|| format!("note not found: {id}"))?;
             let version = store.note_version(&id).map_err(not_found_context(&id))?;
             if cli.json {
                 let mut value = serde_json::to_value(&note.metadata)?;
@@ -122,14 +131,22 @@ fn run() -> Result<()> {
             let body = body
                 .or_else(read_stdin)
                 .context("provide --body or pipe content on stdin")?;
-            let meta = store.update_note(&id, &body).map_err(not_found_context(&id))?;
+            let meta = store
+                .update_note(&id, &body)
+                .map_err(not_found_context(&id))?;
             if cli.json {
                 print_json(&serde_json::to_value(&meta)?)?;
             } else {
                 println!("Updated: {} ({})", display_title(&meta), meta.id);
             }
         }
-        Command::EditLines { id, start, end, text, expect } => {
+        Command::EditLines {
+            id,
+            start,
+            end,
+            text,
+            expect,
+        } => {
             let text = text.or_else(read_stdin).unwrap_or_default();
             let meta = store
                 .edit_lines(&id, expect.as_deref(), start, end, &text)
@@ -137,7 +154,11 @@ fn run() -> Result<()> {
             if cli.json {
                 print_json(&serde_json::to_value(&meta)?)?;
             } else {
-                println!("Edited lines {start}..={end} of {} ({})", display_title(&meta), meta.id);
+                println!(
+                    "Edited lines {start}..={end} of {} ({})",
+                    display_title(&meta),
+                    meta.id
+                );
             }
         }
         Command::Search { query, limit } => {
@@ -146,7 +167,11 @@ fn run() -> Result<()> {
                 print_json(&serde_json::to_value(&results)?)?;
             } else {
                 for r in &results {
-                    let title = if r.title.is_empty() { "(untitled)" } else { &r.title };
+                    let title = if r.title.is_empty() {
+                        "(untitled)"
+                    } else {
+                        &r.title
+                    };
                     let snippet = r.snippet.split_whitespace().collect::<Vec<_>>().join(" ");
                     println!("{}  {title} — {snippet}", r.note_id);
                 }
@@ -166,6 +191,7 @@ fn run() -> Result<()> {
                 }
             }
         }
+        Command::Bulk(args) => bulk::run(&mut store, args, cli.json)?,
         Command::Delete { id } => {
             let meta = store.delete_note(&id).map_err(not_found_context(&id))?;
             if cli.json {
@@ -243,7 +269,9 @@ fn run() -> Result<()> {
                 }
             }
         },
-        Command::Todos { project: project_override } => {
+        Command::Todos {
+            project: project_override,
+        } => {
             let cwd = std::env::current_dir().context("reading current directory")?;
             let tag = project::resolve(&cwd, project_override.as_deref())?;
             let todos = store.list_todo_items_for_tag(&tag)?;
@@ -257,11 +285,15 @@ fn run() -> Result<()> {
                 }
             }
         }
-        Command::Todo { action: TodoAction::Add { note_id, text } } => {
+        Command::Todo {
+            action: TodoAction::Add { note_id, text },
+        } => {
             if text.trim().is_empty() {
                 bail!("todo text is empty");
             }
-            let meta = store.add_todo(&note_id, &text).map_err(not_found_context(&note_id))?;
+            let meta = store
+                .add_todo(&note_id, &text)
+                .map_err(not_found_context(&note_id))?;
             if cli.json {
                 print_json(&serde_json::to_value(&meta)?)?;
             } else {
@@ -281,11 +313,20 @@ fn run() -> Result<()> {
                 print_json(&json!({"id": meta.id, "index": index, "checked": checked}))?;
             } else {
                 let verb = if checked { "Checked" } else { "Unchecked" };
-                println!("{verb} todo {index} in {} ({})", display_title(&meta), meta.id);
+                println!(
+                    "{verb} todo {index} in {} ({})",
+                    display_title(&meta),
+                    meta.id
+                );
             }
         }
         Command::Note { action } => match action {
-            NoteAction::Add { text, file, project: project_override, note_type } => {
+            NoteAction::Add {
+                text,
+                file,
+                project: project_override,
+                note_type,
+            } => {
                 let text = match (text, file) {
                     (Some(t), _) => t,
                     (None, Some(path)) => std::fs::read_to_string(&path)
@@ -308,7 +349,9 @@ fn run() -> Result<()> {
                 }
             }
             NoteAction::SetType { note_id, note_type } => {
-                let meta = store.set_note_type(&note_id, &note_type).map_err(not_found_context(&note_id))?;
+                let meta = store
+                    .set_note_type(&note_id, &note_type)
+                    .map_err(not_found_context(&note_id))?;
                 if cli.json {
                     print_json(&serde_json::to_value(&meta)?)?;
                 } else {
@@ -316,7 +359,10 @@ fn run() -> Result<()> {
                 }
             }
         },
-        Command::Notes { project: project_override, note_type } => {
+        Command::Notes {
+            project: project_override,
+            note_type,
+        } => {
             let cwd = std::env::current_dir().context("reading current directory")?;
             let tag = project::resolve(&cwd, project_override.as_deref())?;
             let notes = match &note_type {
@@ -327,7 +373,13 @@ fn run() -> Result<()> {
                 print_json(&serde_json::to_value(&notes)?)?;
             } else {
                 for m in &notes {
-                    println!("{}  {}  {}{}", m.id, m.modified_at, display_title(m), tag_suffix(m));
+                    println!(
+                        "{}  {}  {}{}",
+                        m.id,
+                        m.modified_at,
+                        display_title(m),
+                        tag_suffix(m)
+                    );
                 }
             }
         }
@@ -353,15 +405,26 @@ fn run() -> Result<()> {
                 }
             }
         },
-        Command::Import { dir, project: project_override } => {
-            let tag_override =
-                project_override.as_deref().map(project::require_tag).transpose()?;
+        Command::Import {
+            dir,
+            project: project_override,
+            no_project,
+        } => {
+            let tag_override = project_override
+                .as_deref()
+                .map(project::require_tag)
+                .transpose()?;
+            let source = match (&tag_override, no_project) {
+                (_, true) => transfer::ProjectSource::None,
+                (Some(tag), _) => transfer::ProjectSource::Tag(tag),
+                (None, false) => transfer::ProjectSource::Folders,
+            };
             let (created, skipped) =
-                transfer::import(&mut store, &dir, &author(&data_dir)?, tag_override.as_deref())
-                    // Core can't name CLI flags; here "explicitly" means --project.
+                transfer::import(&mut store, &dir, &author(&data_dir)?, source)
+                    // Core can't name CLI flags; "explicitly" means --project here.
                     .map_err(|e| match e {
                         transfer::TransferError::NoProject { .. } => {
-                            anyhow::anyhow!("{e} (--project <name>)")
+                            anyhow::anyhow!("{e} (--project <name>, or --no-project)")
                         }
                         other => other.into(),
                     })?;

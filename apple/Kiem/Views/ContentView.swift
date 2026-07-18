@@ -102,5 +102,51 @@ struct ContentView: View {
         } message: {
             Text(model.errorMessage ?? "")
         }
+        .alert(
+            "Import & Export",
+            isPresented: Binding(
+                get: { model.transferMessage != nil },
+                set: { if !$0 { model.transferMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(model.transferMessage ?? "")
+        }
+        // Not user-dismissable: transfers can't be cancelled mid-flight.
+        .sheet(isPresented: Binding(
+            get: { model.activeTransfer != nil },
+            set: { _ in }
+        )) {
+            TransferProgressView(model: model)
+                .interactiveDismissDisabled()
+        }
+    }
+}
+
+/// Modal progress for a running import/export — determinate once the first
+/// (done, total) callback lands, a plain spinner before that.
+private struct TransferProgressView: View {
+    let model: KiemModel
+
+    var body: some View {
+        VStack(spacing: 10) {
+            if let transfer = model.activeTransfer {
+                if transfer.total > 0 {
+                    ProgressView(value: Double(transfer.done), total: Double(transfer.total))
+                        .progressViewStyle(.linear)
+                    Text("\(transfer.verb) \(transfer.done) of \(transfer.total) notes…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView()
+                    Text("\(transfer.verb)…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 300)
     }
 }

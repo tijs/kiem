@@ -5,9 +5,9 @@ import SwiftUI
 struct NoteListView: View {
     @Bindable var model: KiemModel
 
-    /// The note a plain-⌫ press asked to trash; non-nil drives the
+    /// The notes a plain-⌫ press asked to trash; non-nil drives the
     /// confirmation dialog (⌘⌫ trashes immediately, no dialog).
-    @State private var noteAwaitingTrash: NoteMetadata?
+    @State private var notesAwaitingTrash: Set<String>?
 
     /// Human section titles for known note types, in display order. Unknown
     /// non-`note` types get their own section by capitalized name; `note` (the
@@ -31,7 +31,7 @@ struct NoteListView: View {
                     description: Text("Create a note with ⌘N.")
                 )
             } else {
-                List(selection: $model.selectedNoteID) {
+                List(selection: $model.selectedNoteIDs) {
                     if !model.openTodos.isEmpty {
                         Section("Open todos") {
                             ForEach(todoGroups) { group in
@@ -84,22 +84,28 @@ struct NoteListView: View {
                         }
                     }
                 }
+                // Right-click acts on the whole selection (or just the row
+                // under the cursor when it isn't part of it) — the same
+                // actions as dragging notes onto sidebar targets.
+                .contextMenu(forSelectionType: String.self) { ids in
+                    selectionMenu(ids)
+                }
                 // Plain ⌫ rides the responder chain (`onDeleteCommand`), so it
                 // only fires when the list is first responder — the editor keeps
                 // ⌫ = delete-char. ⌘⌫ never reaches this selector (Command
                 // re-routes the key), so it's caught by the monitor below.
                 .onDeleteCommand {
-                    guard let note = model.selectedNote, !model.isViewingTrash else { return }
-                    noteAwaitingTrash = note
+                    guard !model.selectedNoteIDs.isEmpty, !model.isViewingTrash else { return }
+                    notesAwaitingTrash = model.selectedNoteIDs
                 }
-                // ⌘⌫ = trash the selected note instantly. A window-local key
+                // ⌘⌫ = trash the selection instantly. A window-local key
                 // monitor is the only thing that reliably sees it (onKeyPress
                 // needs SwiftUI focus a row-click doesn't grant; onDeleteCommand
                 // never gets the Command-modified key). It yields to any text
                 // editor, where ⌘⌫ legitimately means delete-to-line-start.
                 .background(CommandDeleteMonitor {
-                    guard !model.isViewingTrash, let note = model.selectedNote else { return false }
-                    model.deleteNote(id: note.id)
+                    guard !model.isViewingTrash, !model.selectedNoteIDs.isEmpty else { return false }
+                    model.trashNotes(model.selectedNoteIDs)
                     return true
                 })
             }
@@ -121,17 +127,60 @@ struct NoteListView: View {
         .confirmationDialog(
             "Move to Trash?",
             isPresented: Binding(
-                get: { noteAwaitingTrash != nil },
-                set: { if !$0 { noteAwaitingTrash = nil } }
+                get: { notesAwaitingTrash != nil },
+                set: { if !$0 { notesAwaitingTrash = nil } }
             ),
             titleVisibility: .visible,
-            presenting: noteAwaitingTrash
-        ) { note in
-            Button("Move “\(note.title.isEmpty ? "Untitled" : note.title)” to Trash", role: .destructive) {
-                model.deleteNote(id: note.id)
+            presenting: notesAwaitingTrash
+        ) { ids in
+            Button(trashButtonTitle(ids), role: .destructive) {
+                model.trashNotes(ids)
             }
         } message: { _ in
-            Text("You can restore it from Trash. Tip: ⌘⌫ trashes without asking.")
+            Text("You can restore from Trash. Tip: ⌘⌫ trashes without asking.")
+        }
+    }
+
+    private func trashButtonTitle(_ ids: Set<String>) -> String {
+        if ids.count == 1, let note = model.notes.first(where: { ids.contains($0.id) }) {
+            return "Move “\(note.title.isEmpty ? "Untitled" : note.title)” to Trash"
+        }
+        return "Move \(ids.count) Notes to Trash"
+    }
+
+    /// The right-click menu for a selection — mirror of the sidebar drag
+    /// targets: pin (drag to Pinned), add to project (drag to a project),
+    /// trash (drag to Trash); restore inside the Trash view.
+    @ViewBuilder
+    private func selectionMenu(_ ids: Set<String>) -> some View {
+        if ids.isEmpty {
+            EmptyView()
+        } else if model.isViewingTrash {
+            Button(ids.count == 1 ? "Restore" : "Restore \(ids.count) Notes") {
+                model.restoreNotes(ids)
+            }
+        } else {
+            let selected = model.notes.filter { ids.contains($0.id) }
+            let allPinned = !selected.isEmpty && selected.allSatisfy(\.pinned)
+            Button(allPinned ? "Unpin" : "Pin") {
+                model.setPinned(ids, pinned: !allPinned)
+            }
+            if !model.projects.isEmpty {
+                Menu("Add to Project") {
+                    ForEach(model.projects, id: \.tag) { entry in
+                        Button(KiemModel.projectName(entry.tag)) {
+                            model.addTag(ids, tag: entry.tag)
+                        }
+                    }
+                }
+            }
+            Divider()
+            Button(
+                ids.count == 1 ? "Move to Trash" : "Move \(ids.count) Notes to Trash",
+                role: .destructive
+            ) {
+                model.trashNotes(ids)
+            }
         }
     }
 
@@ -183,17 +232,15 @@ struct NoteListView: View {
         // views (All Notes, tag filters, smart filters) keep showing tags.
         NoteRow(note: note, showStatusInsteadOfTags: model.isViewingProject)
             .tag(note.id)
-            .contextMenu {
-                if model.isViewingTrash {
-                    Button("Restore") {
-                        model.restoreNote(id: note.id)
-                    }
-                } else {
-                    Button("Move to Trash", role: .destructive) {
-                        model.deleteNote(id: note.id)
-                    }
-                }
-            }
+            .draggable(dragPayload(for: note))
+    }
+
+    /// Drag payload: newline-joined note ids. Dragging a selected row drags
+    /// the whole selection; dragging an unselected row drags just that note.
+    /// The sidebar's drop targets split this back into a set.
+    private func dragPayload(for note: NoteMetadata) -> String {
+        let ids = model.selectedNoteIDs.contains(note.id) ? model.selectedNoteIDs : [note.id]
+        return ids.sorted().joined(separator: "\n")
     }
 }
 

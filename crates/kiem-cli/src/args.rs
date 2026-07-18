@@ -6,7 +6,11 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "kiem", version, about = "Kiem: P2P notes for humans and agents")]
+#[command(
+    name = "kiem",
+    version,
+    about = "Kiem: P2P notes for humans and agents"
+)]
 pub struct Cli {
     /// Data directory (default: ~/.kiem)
     #[arg(long, global = true, value_name = "DIR")]
@@ -68,6 +72,8 @@ pub enum Command {
     },
     /// List all tags with usage counts
     Tags,
+    /// Apply one operation to multiple notes selected by tag, project, IDs, or stdin
+    Bulk(BulkArgs),
     /// Move a note to trash (soft delete)
     Delete { id: String },
     /// Manage projects (a project is the reserved tag proj/<slug>)
@@ -122,6 +128,11 @@ pub enum Command {
         /// instead of deriving projects from folder names
         #[arg(long)]
         project: Option<String>,
+        /// Assign no project at all — notes keep only the tags already in
+        /// their bodies (e.g. importing a Bear/Obsidian dump that isn't one
+        /// project)
+        #[arg(long, conflicts_with = "project")]
+        no_project: bool,
     },
     /// Run the sync daemon (foreground): connect known peers, keep notes converged
     Sync {
@@ -136,6 +147,53 @@ pub enum Command {
         #[command(subcommand)]
         action: PairAction,
     },
+}
+
+#[derive(clap::Args)]
+pub struct BulkArgs {
+    /// Select notes carrying this exact tag (trashed notes for restore)
+    #[arg(long)]
+    pub tag: Option<String>,
+    /// Select notes in this project (trashed notes for restore)
+    #[arg(long)]
+    pub project: Option<String>,
+    /// Select a note by ID; repeat for multiple notes
+    #[arg(long = "id")]
+    pub ids: Vec<String>,
+    /// Read note IDs from stdin, one per line
+    #[arg(long)]
+    pub stdin: bool,
+    /// Show what would change without writing
+    #[arg(long, conflicts_with = "yes")]
+    pub dry_run: bool,
+    /// Confirm and apply the operation
+    #[arg(long, conflicts_with = "dry_run")]
+    pub yes: bool,
+    #[command(subcommand)]
+    pub action: BulkAction,
+}
+
+#[derive(Subcommand)]
+pub enum BulkAction {
+    /// Add or remove a body-derived hashtag
+    Tag {
+        #[command(subcommand)]
+        action: BulkTagAction,
+    },
+    /// Reclassify the selected notes
+    SetType { note_type: String },
+    /// Move the selected notes to trash
+    Delete,
+    /// Restore the selected notes from trash
+    Restore,
+}
+
+#[derive(Subcommand)]
+pub enum BulkTagAction {
+    /// Add a hashtag (without the leading #)
+    Add { tag: String },
+    /// Remove a hashtag (without the leading #)
+    Remove { tag: String },
 }
 
 #[derive(Subcommand)]

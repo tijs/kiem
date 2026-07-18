@@ -53,7 +53,11 @@ pub enum StoreError {
     #[error("note {0} not found")]
     NotFound(String),
     #[error("note {id} changed since you read it (expected version {expected}, found {found})")]
-    VersionMismatch { id: String, expected: String, found: String },
+    VersionMismatch {
+        id: String,
+        expected: String,
+        found: String,
+    },
     #[error(
         "editing note {id} would remove its only tag(s) ({tags:?}) — it would drop out of \
          every tag/project filter (including `kiem notes`/`kiem todos` for its project). \
@@ -187,7 +191,11 @@ impl NoteStore {
     }
 
     /// Create a note from body text; id and timestamps are generated.
-    pub fn create_note(&mut self, body: &str, author_did: &str) -> Result<NoteMetadata, StoreError> {
+    pub fn create_note(
+        &mut self,
+        body: &str,
+        author_did: &str,
+    ) -> Result<NoteMetadata, StoreError> {
         let note = NoteDoc::new(body, author_did);
         self.insert_note(&note)
     }
@@ -261,10 +269,70 @@ impl NoteStore {
         Ok(m.clone())
     }
 
+    /// Run many mutations as one unit: a single SQLite transaction, with
+    /// search indexing deferred to one rebuild at the end — the per-note
+    /// tantivy commit and journal fsync made a 400-note import take over a
+    /// minute. The search index is parked (`Option::take`) for the duration,
+    /// so the per-note indexing branches skip naturally; on error the
+    /// transaction rolls back and the index was never touched.
+    pub fn bulk<T, E: From<StoreError>>(
+        &mut self,
+        work: impl FnOnce(&mut Self) -> Result<T, E>,
+    ) -> Result<T, E> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| E::from(StoreError::from(e)))?;
+        let parked_search = self.search.take();
+        let result = work(self);
+        self.search = parked_search;
+        match result {
+            Ok(value) => {
+                self.conn
+                    .execute_batch("COMMIT")
+                    .map_err(|e| E::from(StoreError::from(e)))?;
+                if self.search.is_some() {
+                    self.rebuild_search_index().map_err(E::from)?;
+                }
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
     /// Replace the note body. Title/tags/todos/modified_at are re-derived and
     /// the existing Automerge document is spliced (history preserved).
     pub fn update_note(&mut self, id: &str, body: &str) -> Result<NoteMetadata, StoreError> {
         self.write_body(id, body)
+    }
+
+    /// Add a body-derived hashtag. Idempotent when the note already carries it.
+    pub fn add_tag(&mut self, id: &str, tag: &str) -> Result<NoteMetadata, StoreError> {
+        let note = self
+            .get_note(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let body = crate::project::ensure_tag(note.body.as_str(), tag);
+        if body == note.body.as_str() {
+            Ok(note.metadata)
+        } else {
+            self.write_body(id, &body)
+        }
+    }
+
+    /// Remove a body-derived hashtag. Unlike generic body replacement, this
+    /// explicit operation may intentionally leave the note untagged.
+    pub fn remove_tag(&mut self, id: &str, tag: &str) -> Result<NoteMetadata, StoreError> {
+        let note = self
+            .get_note(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let body = content::remove_tag(note.body.as_str(), tag);
+        if body == note.body.as_str() {
+            Ok(note.metadata)
+        } else {
+            self.write_body_inner(id, &body, true)
+        }
     }
 
     /// Replace the 1-based inclusive line range `start..=end` of a note's body
@@ -280,7 +348,9 @@ impl NoteStore {
         end: usize,
         replacement: &str,
     ) -> Result<NoteMetadata, StoreError> {
-        let mut doc = self.load_doc(id)?.ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
+        let mut doc = self
+            .load_doc(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
         if let Some(expected) = expect_version {
             let found = doc_version(&mut doc);
             if found != expected {
@@ -316,7 +386,9 @@ impl NoteStore {
     /// resurrect it. Returns how many notes were erased.
     pub fn purge_deleted(&mut self) -> Result<usize, StoreError> {
         let ids: Vec<String> = {
-            let mut stmt = self.conn.prepare("SELECT id FROM notes WHERE deleted = 1")?;
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id FROM notes WHERE deleted = 1")?;
             let rows = stmt.query_map([], |row| row.get(0))?;
             rows.collect::<Result<Vec<_>, _>>()?
         };
@@ -352,7 +424,8 @@ impl NoteStore {
             .map(|bytes| AutoCommit::load(&bytes).map_err(|e| document_err(TOMBSTONES_DOC_ID, e)))
             .transpose()?
             .unwrap_or_else(AutoCommit::new);
-        let mut set: TombstoneDoc = hydrate(&doc).map_err(|e| document_err(TOMBSTONES_DOC_ID, e))?;
+        let mut set: TombstoneDoc =
+            hydrate(&doc).map_err(|e| document_err(TOMBSTONES_DOC_ID, e))?;
         for id in ids {
             set.purged.insert(id.clone(), true);
         }
@@ -364,7 +437,9 @@ impl NoteStore {
     /// [`TOMBSTONES_DOC_ID`](crate::sync::TOMBSTONES_DOC_ID). `None` until the
     /// first purge anywhere in the mesh.
     pub fn tombstone_doc_bytes(&self) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut stmt = self.conn.prepare("SELECT doc FROM tombstone_doc WHERE id = 1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT doc FROM tombstone_doc WHERE id = 1")?;
         let mut rows = stmt.query([])?;
         Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
     }
@@ -517,6 +592,15 @@ impl NoteStore {
     /// (see [`content::body_splice`]). Metadata reconciles normally — the body
     /// object carries no autosurgeon edits, so `reconcile` leaves it untouched.
     fn write_body(&mut self, id: &str, new_body: &str) -> Result<NoteMetadata, StoreError> {
+        self.write_body_inner(id, new_body, false)
+    }
+
+    fn write_body_inner(
+        &mut self,
+        id: &str,
+        new_body: &str,
+        allow_untagged: bool,
+    ) -> Result<NoteMetadata, StoreError> {
         use automerge::transaction::Transactable;
         let mut doc = self
             .load_doc(id)?
@@ -526,8 +610,11 @@ impl NoteStore {
         let old_tags = content::extract_tags(old_rest);
         let (status, new_rest) = content::parse_frontmatter_status(new_body);
         let new_tags = content::extract_tags(new_rest);
-        if !old_tags.is_empty() && new_tags.is_empty() {
-            return Err(StoreError::TagsWouldBeLost { id: id.to_owned(), tags: old_tags });
+        if !allow_untagged && !old_tags.is_empty() && new_tags.is_empty() {
+            return Err(StoreError::TagsWouldBeLost {
+                id: id.to_owned(),
+                tags: old_tags,
+            });
         }
         if let Some(s) = content::body_splice(&old, new_body) {
             doc.splice_text(&obj, s.pos, s.del as isize, &s.insert)
@@ -546,7 +633,12 @@ impl NoteStore {
     /// Write the note's denormalized columns + saved document to SQLite and
     /// refresh the search index. Shared by [`mutate`](Self::mutate) and
     /// [`write_body`](Self::write_body).
-    fn persist(&mut self, _id: &str, doc: &mut AutoCommit, note: &NoteDoc) -> Result<(), StoreError> {
+    fn persist(
+        &mut self,
+        _id: &str,
+        doc: &mut AutoCommit,
+        note: &NoteDoc,
+    ) -> Result<(), StoreError> {
         let m = &note.metadata;
         self.conn.execute(
             "UPDATE notes SET title = ?2, tags = ?3, pinned = ?4, deleted = ?5,
@@ -577,10 +669,11 @@ impl NoteStore {
     fn load_doc(&self, id: &str) -> Result<Option<AutoCommit>, StoreError> {
         match self.get_doc_bytes(id)? {
             None => Ok(None),
-            Some(b) => AutoCommit::load(&b).map(Some).map_err(|e| document_err(id, e)),
+            Some(b) => AutoCommit::load(&b)
+                .map(Some)
+                .map_err(|e| document_err(id, e)),
         }
     }
-
 }
 
 /// Add the `status` column to a pre-existing `notes` table that predates it.

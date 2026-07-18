@@ -89,9 +89,13 @@ pub fn ensure_agents_pointer(dir: &Path, tag: &str) -> Result<()> {
 /// (`projects`, `project_owner`, …) and only errors once no `project` key is found.
 fn parse_marker(text: &str) -> Result<String> {
     for line in text.lines() {
-        let Some(rest) = line.trim().strip_prefix("project") else { continue };
+        let Some(rest) = line.trim().strip_prefix("project") else {
+            continue;
+        };
         // The exact key `project`: the next non-space character must be `=`.
-        let Some(value) = rest.trim_start().strip_prefix('=') else { continue };
+        let Some(value) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
         let value = value.trim().trim_matches('"').trim();
         if !value.is_empty() {
             return Ok(value.to_string());
@@ -118,7 +122,10 @@ mod tests {
     fn marker_roundtrips_and_parses() {
         let dir = tempfile::tempdir().unwrap();
         write_marker(dir.path(), "proj/kiem_app").unwrap();
-        assert_eq!(read_marker(dir.path()).unwrap().as_deref(), Some("proj/kiem_app"));
+        assert_eq!(
+            read_marker(dir.path()).unwrap().as_deref(),
+            Some("proj/kiem_app")
+        );
     }
 
     #[test]
@@ -150,7 +157,11 @@ mod tests {
     fn parse_marker_skips_non_key_lines_and_errors_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         // A `project`-prefixed decoy key above the real key must not abort parsing.
-        std::fs::write(dir.path().join(MARKER), "project_owner = \"me\"\nproject = \"proj/y\"\n").unwrap();
+        std::fs::write(
+            dir.path().join(MARKER),
+            "project_owner = \"me\"\nproject = \"proj/y\"\n",
+        )
+        .unwrap();
         assert_eq!(read_marker(dir.path()).unwrap().as_deref(), Some("proj/y"));
 
         std::fs::write(dir.path().join(MARKER), "name = \"x\"\n").unwrap();
@@ -173,7 +184,10 @@ mod tests {
         let from_name = resolve(dir.path(), None).unwrap();
         assert!(from_name.starts_with("proj/"));
         // Explicit override wins regardless of marker.
-        assert_eq!(resolve(dir.path(), Some("Other Thing")).unwrap(), "proj/other_thing");
+        assert_eq!(
+            resolve(dir.path(), Some("Other Thing")).unwrap(),
+            "proj/other_thing"
+        );
         // Marker wins over dir name.
         write_marker(dir.path(), "proj/marked").unwrap();
         assert_eq!(resolve(dir.path(), None).unwrap(), "proj/marked");

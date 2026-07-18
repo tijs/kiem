@@ -20,7 +20,9 @@ fn store_with(notes: &[NoteDoc]) -> NoteStore {
 #[test]
 fn create_then_get_roundtrips_all_fields() {
     let mut store = NoteStore::open_in_memory().unwrap();
-    let meta = store.create_note("# Hello\n\nWorld #greeting", DID).unwrap();
+    let meta = store
+        .create_note("# Hello\n\nWorld #greeting", DID)
+        .unwrap();
     assert_eq!(meta.title, "Hello");
     assert_eq!(meta.tags, vec!["greeting"]);
 
@@ -66,11 +68,16 @@ fn duplicate_id_is_rejected() {
 #[test]
 fn update_rederives_metadata_and_preserves_created_at() {
     let mut store = store_with(&[note("a", "# Before", "2026-06-10T10:00:00Z")]);
-    let meta = store.update_note("a", "# After\n\n- [ ] task #later").unwrap();
+    let meta = store
+        .update_note("a", "# After\n\n- [ ] task #later")
+        .unwrap();
     assert_eq!(meta.title, "After");
     assert_eq!(meta.tags, vec!["later"]);
     assert_eq!(meta.created_at, "2026-06-10T10:00:00Z");
-    assert!(meta.modified_at > meta.created_at, "modified_at must advance");
+    assert!(
+        meta.modified_at > meta.created_at,
+        "modified_at must advance"
+    );
 
     let loaded = store.get_note("a").unwrap().unwrap();
     assert_eq!(loaded.body.as_str(), "# After\n\n- [ ] task #later");
@@ -85,10 +92,14 @@ fn update_rederives_status_on_edit() {
     let mut store = store_with(&[note("a", "# Before", "2026-06-10T10:00:00Z")]);
     assert_eq!(store.get_note("a").unwrap().unwrap().metadata.status, None);
 
-    let meta = store.update_note("a", "---\nstatus: active\n---\n# After #tag").unwrap();
+    let meta = store
+        .update_note("a", "---\nstatus: active\n---\n# After #tag")
+        .unwrap();
     assert_eq!(meta.status, Some("active".to_string()));
 
-    let meta = store.update_note("a", "---\nstatus: completed\n---\n# After #tag").unwrap();
+    let meta = store
+        .update_note("a", "---\nstatus: completed\n---\n# After #tag")
+        .unwrap();
     assert_eq!(meta.status, Some("completed".to_string()));
 
     // Removing the frontmatter clears status back to None.
@@ -143,7 +154,10 @@ fn persists_across_open_close() {
     let dir = tempfile::tempdir().unwrap();
     let id = {
         let mut store = NoteStore::open_dir(dir.path()).unwrap();
-        store.create_note("# Durable\n\nkept #keep", DID).unwrap().id
+        store
+            .create_note("# Durable\n\nkept #keep", DID)
+            .unwrap()
+            .id
     };
     let store = NoteStore::open_dir(dir.path()).unwrap();
     let loaded = store.get_note(&id).unwrap().expect("note survives reopen");
@@ -200,9 +214,17 @@ fn opening_a_pre_status_column_database_migrates_it_idempotently() {
 #[test]
 fn project_todos_aggregate_across_tagged_notes_excluding_others() {
     let store = store_with(&[
-        note("a", "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2", "2026-06-28T10:00:00Z"),
+        note(
+            "a",
+            "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2",
+            "2026-06-28T10:00:00Z",
+        ),
         note("b", "# B #proj/x\n- [ ] b1", "2026-06-28T11:00:00Z"),
-        note("c", "# C #other\n- [ ] not-in-project", "2026-06-28T12:00:00Z"),
+        note(
+            "c",
+            "# C #other\n- [ ] not-in-project",
+            "2026-06-28T12:00:00Z",
+        ),
     ]);
     let todos = store.list_todo_items_for_tag("proj/x").unwrap();
     // Only the two project notes' *unchecked* items, note-list order (b before a:
@@ -228,19 +250,29 @@ fn purges_propagate_to_peers_and_win_against_offline_edits() {
     store_b.delete_note("n1").unwrap();
     assert_eq!(store_b.purge_deleted().unwrap(), 1);
     assert!(store_b.get_note("n1").unwrap().is_none());
-    store_a.update_note("n1", "# Doomed note\n\nedited while B purged").unwrap();
+    store_a
+        .update_note("n1", "# Doomed note\n\nedited while B purged")
+        .unwrap();
 
     // Full exchange: the purge wins everywhere. B must not resurrect the note
     // from A's edit (put_doc drops purged ids), and A must adopt the purge
     // through the synced tombstone doc.
     sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
-    assert!(store_b.get_note("n1").unwrap().is_none(), "purged note resurrected on B");
-    assert!(store_a.get_note("n1").unwrap().is_none(), "purge did not propagate to A");
+    assert!(
+        store_b.get_note("n1").unwrap().is_none(),
+        "purged note resurrected on B"
+    );
+    assert!(
+        store_a.get_note("n1").unwrap().is_none(),
+        "purge did not propagate to A"
+    );
     assert!(store_a.list_deleted().unwrap().is_empty());
     assert!(store_b.list_deleted().unwrap().is_empty());
 
     // A note created after the purge syncs normally in both directions.
-    store_a.create_note("# Survivor", "did:key:z6MkTest").unwrap();
+    store_a
+        .create_note("# Survivor", "did:key:z6MkTest")
+        .unwrap();
     sync_until_converged(&mut store_a, &mut engine_a, &mut store_b, &mut engine_b);
     assert_eq!(store_b.list_notes().unwrap().len(), 1);
 }
@@ -291,17 +323,28 @@ fn purge_tag_erases_the_whole_project_including_trashed_and_spares_others() {
 
     assert!(store.list_by_tag("proj/x").unwrap().is_empty());
     assert!(store.get_note("x1").unwrap().is_none());
-    assert!(store.get_note("x3").unwrap().is_none(), "trashed project note purged too");
+    assert!(
+        store.get_note("x3").unwrap().is_none(),
+        "trashed project note purged too"
+    );
     assert!(store.list_deleted().unwrap().is_empty());
     // The other project is untouched, and the project tag is gone entirely.
     assert_eq!(store.list_by_tag("proj/y").unwrap().len(), 1);
-    assert!(store.list_tags().unwrap().iter().all(|(tag, _)| tag != "proj/x"));
+    assert!(store
+        .list_tags()
+        .unwrap()
+        .iter()
+        .all(|(tag, _)| tag != "proj/x"));
 }
 
 #[test]
 fn open_todo_items_aggregate_across_all_live_notes() {
     let mut store = store_with(&[
-        note("a", "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2", "2026-06-28T10:00:00Z"),
+        note(
+            "a",
+            "# A #proj/x\n- [ ] a1\n- [x] done\n- [ ] a2",
+            "2026-06-28T10:00:00Z",
+        ),
         note("b", "# B untagged\n- [ ] b1", "2026-06-28T11:00:00Z"),
         note("c", "# C no todos here", "2026-06-28T12:00:00Z"),
         note("d", "# D trashed\n- [ ] gone", "2026-06-28T13:00:00Z"),
@@ -332,14 +375,23 @@ fn set_todo_checked_removes_item_from_aggregate_and_keeps_tags() {
     assert_eq!(after.len(), 1);
     assert_eq!(after[0].text, "keep");
     // the underlying note body actually flipped
-    let body = store.get_note("a").unwrap().unwrap().body.as_str().to_owned();
+    let body = store
+        .get_note("a")
+        .unwrap()
+        .unwrap()
+        .body
+        .as_str()
+        .to_owned();
     assert!(body.contains("- [x] finish"));
 }
 
 #[test]
 fn project_todos_empty_when_no_tagged_notes() {
     let store = store_with(&[]);
-    assert!(store.list_todo_items_for_tag("proj/none").unwrap().is_empty());
+    assert!(store
+        .list_todo_items_for_tag("proj/none")
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -370,9 +422,14 @@ fn editing_a_multibyte_body_does_not_corrupt() {
         .update_note("m", "# Plan\n- [x] editor ↔ CRDT loop\n- [ ] café ☕ task")
         .unwrap();
     let loaded = store.get_note("m").unwrap().unwrap();
-    assert_eq!(loaded.body.as_str(), "# Plan\n- [x] editor ↔ CRDT loop\n- [ ] café ☕ task");
+    assert_eq!(
+        loaded.body.as_str(),
+        "# Plan\n- [x] editor ↔ CRDT loop\n- [ ] café ☕ task"
+    );
     // A second edit that rewrites everything after the multibyte chars, too.
-    store.update_note("m", "# Plan\n- [x] editor ↔ CRDT loop\n- [x] café ☕ DONE").unwrap();
+    store
+        .update_note("m", "# Plan\n- [x] editor ↔ CRDT loop\n- [x] café ☕ DONE")
+        .unwrap();
     assert_eq!(
         store.get_note("m").unwrap().unwrap().body.as_str(),
         "# Plan\n- [x] editor ↔ CRDT loop\n- [x] café ☕ DONE"
@@ -389,7 +446,9 @@ fn edit_lines_targets_a_line_and_guards_stale_version() {
     let version = store.note_version("e").unwrap();
 
     // Replace line 3 ("- [ ] b") only; multibyte line above is untouched.
-    store.edit_lines("e", Some(&version), 3, 3, "- [x] b").unwrap();
+    store
+        .edit_lines("e", Some(&version), 3, 3, "- [x] b")
+        .unwrap();
     assert_eq!(
         store.get_note("e").unwrap().unwrap().body.as_str(),
         "# T #proj/x\n- [ ] a ☕\n- [x] b\n- [ ] c"
@@ -402,7 +461,9 @@ fn edit_lines_targets_a_line_and_guards_stale_version() {
     ));
     // Re-reading the version lets it through.
     let fresh = store.note_version("e").unwrap();
-    store.edit_lines("e", Some(&fresh), 2, 2, "- [x] a ☕").unwrap();
+    store
+        .edit_lines("e", Some(&fresh), 2, 2, "- [x] a ☕")
+        .unwrap();
     assert_eq!(store.list_todo_items_for_tag("proj/x").unwrap().len(), 1);
 }
 
@@ -431,14 +492,54 @@ fn edit_lines_refuses_to_strip_the_only_tag() {
 }
 
 #[test]
+fn explicit_tag_operations_are_idempotent_and_may_leave_a_note_untagged() {
+    let mut store = store_with(&[note("a", "# A\n\n#proj/x #keep", "2026-06-28T10:00:00Z")]);
+
+    store.add_tag("a", "keep").unwrap();
+    assert_eq!(
+        store
+            .get_note("a")
+            .unwrap()
+            .unwrap()
+            .body
+            .as_str()
+            .matches("#keep")
+            .count(),
+        1
+    );
+
+    store.remove_tag("a", "proj/x").unwrap();
+    assert_eq!(
+        store.get_note("a").unwrap().unwrap().metadata.tags,
+        vec!["keep"]
+    );
+    store.remove_tag("a", "keep").unwrap();
+    let note = store.get_note("a").unwrap().unwrap();
+    assert!(note.metadata.tags.is_empty());
+    assert!(!note.body.as_str().contains("#keep"));
+}
+
+#[test]
 fn set_note_type_reclassifies_and_persists_to_the_column() {
     let mut store = store_with(&[note("a", "# A\n\n#proj/x", "2026-06-28T10:00:00Z")]);
-    assert_eq!(store.list_by_tag_and_type("proj/x", "note").unwrap().len(), 1);
+    assert_eq!(
+        store.list_by_tag_and_type("proj/x", "note").unwrap().len(),
+        1
+    );
     store.set_note_type("a", "plan").unwrap();
     // The denormalized column (what list reads) must reflect the new type.
-    assert_eq!(store.list_by_tag_and_type("proj/x", "plan").unwrap().len(), 1);
-    assert!(store.list_by_tag_and_type("proj/x", "note").unwrap().is_empty());
+    assert_eq!(
+        store.list_by_tag_and_type("proj/x", "plan").unwrap().len(),
+        1
+    );
+    assert!(store
+        .list_by_tag_and_type("proj/x", "note")
+        .unwrap()
+        .is_empty());
     // Empty resets to the default.
     store.set_note_type("a", "").unwrap();
-    assert_eq!(store.get_note("a").unwrap().unwrap().metadata.note_type, "note");
+    assert_eq!(
+        store.get_note("a").unwrap().unwrap().metadata.note_type,
+        "note"
+    );
 }
