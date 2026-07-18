@@ -117,7 +117,7 @@ final class KiemModel {
     }
 
     /// The reserved namespace that makes a tag a project. Single source of truth
-    /// (mirrors `TAG_PREFIX` in crates/kiem-cli/src/project.rs).
+    /// (mirrors `TAG_PREFIX` in crates/kiem-core/src/project.rs).
     static let projectTagPrefix = "proj/"
 
     /// Display name for a project tag: `proj/kiem_app` → `kiem_app`.
@@ -440,8 +440,38 @@ final class KiemModel {
         selection = .project(tag)
     }
 
-    /// `proj/<slug>` from a free-form name. Byte-for-byte mirror of the Rust CLI
-    /// `to_tag`/`slugify` in `crates/kiem-cli/src/project.rs`, enforced by the
+    // ponytail: export/import run synchronously on the main actor holding the
+    // store+sync mutex — a huge folder beachballs and stalls sync rounds until
+    // done. Upgrade path when that gets real: Task.detached around the store
+    // call, summary hopped back to the main actor (the mutex makes it safe).
+
+    /// Export every project's notes as Markdown files under `dir` (one folder
+    /// per project). Returns a human summary, or nil after reporting the error.
+    func exportNotes(to dir: URL) -> String? {
+        guard let summary = report({ try store.exportNotes(dir: dir.path) }) else { return nil }
+        var text = "Exported \(summary.transferred) notes to “\(dir.lastPathComponent)”."
+        if summary.skipped > 0 {
+            text += " Skipped \(summary.skipped) notes that aren’t in a project."
+        }
+        return text
+    }
+
+    /// Import a folder of Markdown files as notes (a folder is a project:
+    /// subfolders each, or the flat folder itself). Returns a human summary,
+    /// or nil after reporting the error.
+    func importNotes(from dir: URL) -> String? {
+        guard let summary = report({ try store.importNotes(dir: dir.path, authorDid: authorDid) })
+        else { return nil }
+        refresh()
+        var text = "Imported \(summary.transferred) notes from “\(dir.lastPathComponent)”."
+        if summary.skipped > 0 {
+            text += " \(summary.skipped) were already present and were skipped."
+        }
+        return text
+    }
+
+    /// `proj/<slug>` from a free-form name. Byte-for-byte mirror of the Rust
+    /// `to_tag`/`slugify` in `crates/kiem-core/src/project.rs`, enforced by the
     /// shared `fixtures/project-slug.json` parity contract: strip a leading
     /// `proj/`; lowercase ASCII A–Z only (non-ASCII is dropped, NOT Unicode-folded
     /// — `String.lowercased()` would diverge); keep `[a-z0-9/]`; space/`-`/`_` → a

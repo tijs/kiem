@@ -221,6 +221,32 @@ impl KiemStore {
         self.with(|store, _| Ok(store.set_todo_text(&note_id, index as usize, &text)?.into()))
     }
 
+    /// Export every project's notes as Markdown files under `dir` — one
+    /// folder per project, one file per note. Returns written / skipped
+    /// (notes without a project) counts.
+    pub fn export_notes(&self, dir: String) -> Result<TransferSummary, KiemError> {
+        self.with(|store, _| {
+            let (written, skipped) =
+                kiem_core::transfer::export_all(store, std::path::Path::new(&dir))?;
+            Ok(TransferSummary { transferred: written as u32, skipped: skipped as u32 })
+        })
+    }
+
+    /// Import a directory of Markdown files as notes (a folder is a project:
+    /// subfolders each, or the flat folder itself). Returns created / skipped
+    /// (already-present duplicates) counts.
+    pub fn import_notes(
+        &self,
+        dir: String,
+        author_did: String,
+    ) -> Result<TransferSummary, KiemError> {
+        self.with(|store, _| {
+            let (created, skipped) =
+                kiem_core::transfer::import(store, std::path::Path::new(&dir), &author_did, None)?;
+            Ok(TransferSummary { transferred: created.len() as u32, skipped: skipped as u32 })
+        })
+    }
+
     pub fn search(&self, query: String, limit: u32) -> Result<Vec<SearchResult>, KiemError> {
         self.with(|store, _| {
             Ok(store
@@ -410,6 +436,37 @@ mod tests {
         let renamed = store.list_todo_items_for_tag("proj/demo".into()).unwrap();
         assert_eq!(renamed.len(), 1);
         assert_eq!(renamed[0].text, "b renamed");
+    }
+
+    #[test]
+    fn notes_export_and_import_through_the_ffi_surface() {
+        let (_dir, store) = open_temp();
+        store.create_note("# A\n\n- [ ] alpha\n\n#proj/demo".into(), "t".into()).unwrap();
+        store.create_note("# Unfiled".into(), "t".into()).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let dir = out.path().to_string_lossy().into_owned();
+        let exported = store.export_notes(dir.clone()).unwrap();
+        assert_eq!((exported.transferred, exported.skipped), (1, 1));
+
+        let (_dir2, fresh) = open_temp();
+        let imported = fresh.import_notes(dir.clone(), "t".into()).unwrap();
+        assert_eq!((imported.transferred, imported.skipped), (1, 0));
+        assert_eq!(fresh.list_by_tag("proj/demo".into()).unwrap()[0].title, "A");
+        // Re-import is a no-op.
+        let again = fresh.import_notes(dir, "t".into()).unwrap();
+        assert_eq!((again.transferred, again.skipped), (0, 1));
+    }
+
+    #[test]
+    fn transfer_errors_map_to_the_transfer_variant() {
+        let (_dir, store) = open_temp();
+        match store.import_notes("/nonexistent-kiem-import-dir".into(), "t".into()) {
+            Err(KiemError::Transfer { message }) => {
+                assert!(message.contains("resolving directory"), "unhelpful message: {message}");
+            }
+            other => panic!("expected Transfer, got {other:?}"),
+        }
     }
 
     #[test]

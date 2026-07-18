@@ -11,7 +11,8 @@ mod control;
 mod daemon;
 mod pair;
 mod project;
-mod transfer;
+
+use kiem_core::transfer;
 
 use std::io::{IsTerminal, Read};
 use std::path::Path;
@@ -356,7 +357,14 @@ fn run() -> Result<()> {
             let tag_override =
                 project_override.as_deref().map(project::require_tag).transpose()?;
             let (created, skipped) =
-                transfer::import(&mut store, &dir, &author(&data_dir)?, tag_override.as_deref())?;
+                transfer::import(&mut store, &dir, &author(&data_dir)?, tag_override.as_deref())
+                    // Core can't name CLI flags; here "explicitly" means --project.
+                    .map_err(|e| match e {
+                        transfer::TransferError::NoProject { .. } => {
+                            anyhow::anyhow!("{e} (--project <name>)")
+                        }
+                        other => other.into(),
+                    })?;
             if cli.json {
                 let created: Vec<_> = created
                     .iter()

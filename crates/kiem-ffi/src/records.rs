@@ -99,6 +99,15 @@ impl From<kiem_core::store::ProjectTodo> for ProjectTodo {
     }
 }
 
+/// Counts from a notes export/import: `transferred` = files written (export)
+/// or notes created (import); `skipped` = notes without a project (export) or
+/// already-present duplicates (import).
+#[derive(Debug, uniffi::Record)]
+pub struct TransferSummary {
+    pub transferred: u32,
+    pub skipped: u32,
+}
+
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum KiemError {
     #[error("note not found: {id}")]
@@ -109,6 +118,9 @@ pub enum KiemError {
     Storage { message: String },
     #[error("sync error: {message}")]
     Sync { message: String },
+    // Import/export I/O — the message already names the file and operation.
+    #[error("{message}")]
+    Transfer { message: String },
 }
 
 impl From<StoreError> for KiemError {
@@ -117,6 +129,15 @@ impl From<StoreError> for KiemError {
             StoreError::NotFound(id) => KiemError::NotFound { id },
             StoreError::DuplicateId(id) => KiemError::Duplicate { id },
             other => KiemError::Storage { message: other.to_string() },
+        }
+    }
+}
+
+impl From<kiem_core::transfer::TransferError> for KiemError {
+    fn from(err: kiem_core::transfer::TransferError) -> Self {
+        match err {
+            kiem_core::transfer::TransferError::Store(e) => e.into(),
+            other => KiemError::Transfer { message: other.to_string() },
         }
     }
 }

@@ -1,26 +1,50 @@
-//! `kiem export` / `kiem import`: exchange notes as a directory of Markdown
-//! files. The layout is the same in both directions — a folder is a project:
-//! either one flat folder of `.md` files (= one project, named after the
-//! folder) or a folder of subfolders (= one project per subfolder). One file
-//! per note, body verbatim, so the inline `#proj/<slug>` tag and every
-//! checkbox todo round-trip through the normal content derivation. The one
-//! non-verbatim touch: a non-default note type travels as a `type:` line in
-//! the frontmatter fence (CLI-local; core derives status from frontmatter,
-//! never type).
+//! Note import/export as a directory of Markdown files. The layout is the
+//! same in both directions — a folder is a project: either one flat folder of
+//! `.md` files (= one project, named after the folder) or a folder of
+//! subfolders (= one project per subfolder). One file per note, body
+//! verbatim, so the inline `#proj/<slug>` tag and every checkbox todo
+//! round-trip through the normal content derivation. The one non-verbatim
+//! touch: a non-default note type travels as a `type:` line in the
+//! frontmatter fence (core derives status from frontmatter, never type).
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use kiem_core::note::{NoteMetadata, DEFAULT_NOTE_TYPE};
-use kiem_core::store::NoteStore;
+use thiserror::Error;
 
+use crate::note::{NoteMetadata, DEFAULT_NOTE_TYPE};
 use crate::project;
+use crate::store::{NoteStore, StoreError};
+
+#[derive(Debug, Error)]
+pub enum TransferError {
+    #[error("{context}: {source}")]
+    Io {
+        context: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(
+        "cannot derive a project from folder {name:?} (for {file}); \
+         rename the folder to letters/numbers, or choose a project explicitly"
+    )]
+    NoProject { name: String, file: String },
+}
+
+/// `io::Result` → `TransferError::Io` with a lazy human context.
+fn io_ctx<T>(
+    res: std::io::Result<T>,
+    context: impl FnOnce() -> String,
+) -> Result<T, TransferError> {
+    res.map_err(|source| TransferError::Io { context: context(), source })
+}
 
 /// Export every note that belongs to a project into `dir/<slug>/`. Notes
 /// without a usable `proj/*` tag are skipped (export is project-folder-shaped;
 /// a note with several project tags goes under its first one only). Returns
 /// `(written, skipped)`.
-pub fn export_all(store: &NoteStore, dir: &Path) -> Result<(usize, usize)> {
+pub fn export_all(store: &NoteStore, dir: &Path) -> Result<(usize, usize), TransferError> {
     let mut written = 0;
     let mut skipped = 0;
     for meta in store.list_notes()? {
@@ -42,7 +66,7 @@ pub fn export_all(store: &NoteStore, dir: &Path) -> Result<(usize, usize)> {
 }
 
 /// Export one project flat into `dir` — the folder *is* the project.
-pub fn export_project(store: &NoteStore, dir: &Path, tag: &str) -> Result<usize> {
+pub fn export_project(store: &NoteStore, dir: &Path, tag: &str) -> Result<usize, TransferError> {
     let notes = store.list_by_tag(tag)?;
     for meta in &notes {
         write_note(store, meta, dir)?;
@@ -63,12 +87,11 @@ fn slug_folder(slug: &str) -> Option<PathBuf> {
     }
 }
 
-fn write_note(store: &NoteStore, meta: &NoteMetadata, folder: &Path) -> Result<()> {
+fn write_note(store: &NoteStore, meta: &NoteMetadata, folder: &Path) -> Result<(), TransferError> {
     let note = store
         .get_note(&meta.id)?
-        .with_context(|| format!("note not found: {}", meta.id))?;
-    std::fs::create_dir_all(folder)
-        .with_context(|| format!("creating {}", folder.display()))?;
+        .ok_or_else(|| StoreError::NotFound(meta.id.clone()))?;
+    io_ctx(std::fs::create_dir_all(folder), || format!("creating {}", folder.display()))?;
     // Stable, unique filename: title slug + short id, so re-exporting an
     // unchanged note overwrites its file. (A renamed or trashed note leaves
     // its old file behind — re-export into a fresh dir when that matters.)
@@ -83,7 +106,7 @@ fn write_note(store: &NoteStore, meta: &NoteMetadata, folder: &Path) -> Result<(
     } else {
         with_frontmatter_type(note.body.as_str(), &meta.note_type)
     };
-    std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))
+    io_ctx(std::fs::write(&path, body), || format!("writing {}", path.display()))
 }
 
 /// Import every `.md` file under `dir` as a note; returns the created
@@ -99,26 +122,34 @@ pub fn import(
     dir: &Path,
     author: &str,
     override_tag: Option<&str>,
-) -> Result<(Vec<(PathBuf, NoteMetadata)>, usize)> {
-    // Canonicalize so `kiem import .` (file_name() == None) and trailing
-    // `..` resolve to the folder's real name — and so a bad path fails here,
-    // not per-file after a partial import.
-    let dir = dir
-        .canonicalize()
-        .with_context(|| format!("resolving directory {}", dir.display()))?;
+) -> Result<(Vec<(PathBuf, NoteMetadata)>, usize), TransferError> {
+    // Canonicalize so importing `.` (file_name() == None) and trailing `..`
+    // resolve to the folder's real name — and so a bad path fails here, not
+    // per-file after a partial import.
+    let dir = io_ctx(dir.canonicalize(), || format!("resolving directory {}", dir.display()))?;
     let mut files = Vec::new();
     collect_md_files(&dir, &mut files)?;
     files.sort();
+    // Resolve every file's project up front, so one bad folder name fails the
+    // whole import before anything is created (all-or-nothing) — not mid-loop
+    // after earlier folders' notes were already written.
+    let tagged: Vec<(PathBuf, String)> = files
+        .into_iter()
+        .map(|file| {
+            let tag = match override_tag {
+                Some(tag) => tag.to_string(),
+                None => tag_for(&dir, &file)?,
+            };
+            Ok((file, tag))
+        })
+        .collect::<Result<_, TransferError>>()?;
 
     let mut created = Vec::new();
     let mut skipped_duplicates = 0;
-    for file in files {
-        let tag = match override_tag {
-            Some(tag) => tag.to_string(),
-            None => tag_for(&dir, &file)?,
-        };
-        let text = std::fs::read_to_string(&file)
-            .with_context(|| format!("reading {}", file.display()))?;
+    for (file, tag) in tagged {
+        let text = io_ctx(std::fs::read_to_string(&file), || {
+            format!("reading {}", file.display())
+        })?;
         if text.trim().is_empty() {
             continue;
         }
@@ -126,9 +157,7 @@ pub fn import(
         // ponytail: O(files×notes) body rescan; cache bodies per tag if imports get big
         let mut exists = false;
         for m in store.list_by_tag(&tag)? {
-            let note = store
-                .get_note(&m.id)?
-                .with_context(|| format!("note not found: {}", m.id))?;
+            let note = store.get_note(&m.id)?.ok_or_else(|| StoreError::NotFound(m.id.clone()))?;
             if note.body.as_str() == body {
                 exists = true;
                 break;
@@ -149,7 +178,7 @@ pub fn import(
 /// root, slugified — or the root folder's own name for top-level files. A
 /// folder that slugifies to nothing (or to a slug with an empty `//`
 /// component, which would desync export paths from tags) is an error.
-fn tag_for(dir: &Path, file: &Path) -> Result<String> {
+fn tag_for(dir: &Path, file: &Path) -> Result<String, TransferError> {
     let parent = file.parent().unwrap_or(dir);
     let name = if parent == dir {
         dir.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string()
@@ -160,11 +189,7 @@ fn tag_for(dir: &Path, file: &Path) -> Result<String> {
     let tag = project::to_tag(&name);
     let slug = tag.strip_prefix(project::TAG_PREFIX).unwrap_or("");
     if slug.is_empty() || slug.split('/').any(|c| c.is_empty()) {
-        bail!(
-            "cannot derive a project from {:?} (folder of {}); pass --project",
-            name,
-            file.display()
-        );
+        return Err(TransferError::NoProject { name, file: file.display().to_string() });
     }
     Ok(tag)
 }
@@ -173,19 +198,17 @@ fn tag_for(dir: &Path, file: &Path) -> Result<String> {
 /// `.obsidian`, …). Uses the entry's own file type (lstat semantics), so a
 /// symlinked directory is never followed — a cycle like `ln -s . loop` must
 /// not recurse forever, and a symlink into a sibling tree must not import it.
-fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries =
-        std::fs::read_dir(dir).with_context(|| format!("reading directory {}", dir.display()))?;
+fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), TransferError> {
+    let entries = io_ctx(std::fs::read_dir(dir), || format!("reading directory {}", dir.display()))?;
     for entry in entries {
-        let entry = entry.with_context(|| format!("reading directory {}", dir.display()))?;
+        let entry = io_ctx(entry, || format!("reading directory {}", dir.display()))?;
         let path = entry.path();
         let name = path.file_name().and_then(|s| s.to_str()).unwrap_or_default();
         if name.starts_with('.') {
             continue;
         }
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("reading file type of {}", path.display()))?;
+        let file_type =
+            io_ctx(entry.file_type(), || format!("reading file type of {}", path.display()))?;
         if file_type.is_dir() {
             collect_md_files(&path, out)?;
         } else if file_type.is_file()
@@ -221,7 +244,8 @@ fn with_frontmatter_type(body: &str, note_type: &str) -> String {
 }
 
 /// `type: <t>` from a leading frontmatter fence, if any. Mirrors the shape of
-/// core's `parse_frontmatter_status` (which deliberately reads only `status:`).
+/// [`crate::content::parse_frontmatter_status`] (which deliberately reads
+/// only `status:`).
 fn frontmatter_type(body: &str) -> Option<&str> {
     let mut lines = body.lines();
     if lines.next()?.trim_end() != "---" {
@@ -272,8 +296,7 @@ mod tests {
         demo.sort();
         assert!(demo[0].starts_with("plan-"));
         assert!(demo[1].starts_with("work_meetings_agenda-"));
-        let body =
-            std::fs::read_to_string(out.path().join("demo").join(&demo[0])).unwrap();
+        let body = std::fs::read_to_string(out.path().join("demo").join(&demo[0])).unwrap();
         assert_eq!(body, "# Plan\n\n- [ ] ship it\n\n#proj/demo");
         // Nested slug → nested folder path; `proj//sub` lands inside the dir.
         assert_eq!(std::fs::read_dir(out.path().join("work/meetings")).unwrap().count(), 1);
@@ -300,8 +323,7 @@ mod tests {
 
         let (_guard, mut store) = new_store();
         // `inbox/proj-a/..` resolves to the root: the `kiem import .` shape.
-        let (created, skipped) =
-            import(&mut store, &root.join("proj-a/.."), "t", None).unwrap();
+        let (created, skipped) = import(&mut store, &root.join("proj-a/.."), "t", None).unwrap();
         assert_eq!(created.len(), 2);
         assert_eq!(skipped, 0);
 
@@ -365,19 +387,26 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_folders_that_slugify_to_nothing() {
+    fn import_rejects_folders_that_slugify_to_nothing_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("!!!");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("a.md"), "# A").unwrap();
+        // A valid subfolder that sorts BEFORE the failing top-level file:
+        // all-or-nothing means even it must not be imported when any folder
+        // in the batch has no derivable project.
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/ok.md"), "# OK").unwrap();
+        std::fs::write(root.join("z.md"), "# Z").unwrap();
 
         let (_guard, mut store) = new_store();
         let err = import(&mut store, &root, "t", None).unwrap_err();
-        assert!(err.to_string().contains("--project"), "unexpected error: {err:#}");
+        assert!(
+            err.to_string().contains("choose a project"),
+            "unexpected error: {err}"
+        );
         assert!(store.list_notes().unwrap().is_empty(), "nothing may be written");
-        // The override rescues the same directory.
+        // An explicit project rescues the same directory.
         let (created, _) = import(&mut store, &root, "t", Some("proj/x")).unwrap();
-        assert_eq!(created.len(), 1);
+        assert_eq!(created.len(), 2);
     }
 
     #[test]
