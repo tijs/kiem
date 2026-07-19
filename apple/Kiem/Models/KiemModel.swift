@@ -29,6 +29,11 @@ final class KiemModel {
     /// Ids of every paired device (reachable or not) — the denominator for
     /// the sync-status indicator.
     private(set) var knownPeers: [String] = []
+    /// Last sync send/receive timestamp per peer id; used to show a transient
+    /// "syncing" state in the Sync settings pane.
+    private(set) var lastSyncActivity: [String: Date] = [:]
+    /// Human-readable name for this device (defaults to the system host name).
+    private(set) var deviceName: String = ""
 
     // MARK: Pairing (the Sync settings pane)
 
@@ -198,6 +203,7 @@ final class KiemModel {
     /// shared SQLite store, where the DB watcher picks them up for the UI.
     private func startSync() {
         knownPeers = (try? store.knownPeers()) ?? []
+        deviceName = store.deviceName()
         let events = SyncPeerEvents(
             onChange: { [weak self] peerId, connected in
                 Task { @MainActor in
@@ -208,6 +214,12 @@ final class KiemModel {
                     // A newly-trusted peer connecting is the natural moment to
                     // re-read the roster.
                     self.knownPeers = (try? self.store.knownPeers()) ?? []
+                }
+            },
+            onActivity: { [weak self] peerId in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.lastSyncActivity[peerId] = Date()
                 }
             },
             onApprove: { [weak self] peerId in
@@ -281,6 +293,24 @@ final class KiemModel {
         }
     }
 
+    /// Best-known display name for a peer id; falls back to the id itself.
+    func peerName(for peerId: String) -> String {
+        store.peerName(peerId: peerId)
+    }
+
+    /// Rename this device. The new name is sent to peers during the next
+    /// handshake and persisted locally.
+    func setDeviceName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try store.setDeviceName(name: trimmed)
+            deviceName = trimmed
+        } catch {
+            errorMessage = "Couldn't rename this device: \(error)"
+        }
+    }
+
     /// Records an incoming pairing awaiting the user's decision. Only one prompt
     /// shows at a time; a second concurrent request is auto-denied.
     func requestPairingApproval(peerId: String, gate: ApprovalGate) {
@@ -329,6 +359,24 @@ final class KiemModel {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled, let self, self.activeTransfer == nil else { return }
             self.refresh()
+            self.reloadEditorIfExternalWriteChangedIt()
+        }
+    }
+
+    /// If a sync (or other external) write changed the open note while the
+    /// editor was holding stale text, reload the editor so the next flush does
+    /// not clobber the incoming change. Active typing is left alone: the pending
+    /// edit will merge with the external change on flush.
+    private func reloadEditorIfExternalWriteChangedIt() {
+        guard let id = selectedNoteID,
+              pendingEditTask == nil,
+              let note = report({ try store.getNote(id: id) }) ?? nil
+        else { return }
+        if note.body != editorText {
+            // The pending edit (if any) targets the stale body; drop it.
+            pendingEdit = nil
+            loadedBody = note.body
+            editorText = note.body
         }
     }
 
@@ -799,13 +847,16 @@ final class ApprovalGate: @unchecked Sendable {
 /// blocking sync thread and returns the user's decision (see `ApprovalGate`).
 private final class SyncPeerEvents: PeerEvents {
     private let onChange: @Sendable (_ peerId: String, _ connected: Bool) -> Void
+    private let onActivity: @Sendable (_ peerId: String) -> Void
     private let onApprove: @Sendable (_ peerId: String) -> Bool
 
     init(
         onChange: @escaping @Sendable (_ peerId: String, _ connected: Bool) -> Void,
+        onActivity: @escaping @Sendable (_ peerId: String) -> Void,
         onApprove: @escaping @Sendable (_ peerId: String) -> Bool
     ) {
         self.onChange = onChange
+        self.onActivity = onActivity
         self.onApprove = onApprove
     }
 
@@ -815,6 +866,10 @@ private final class SyncPeerEvents: PeerEvents {
 
     func onDisconnected(peerId: String) {
         onChange(peerId, false)
+    }
+
+    func onSyncActivity(peerId: String) {
+        onActivity(peerId)
     }
 
     func approvePairing(peerId: String) -> Bool {

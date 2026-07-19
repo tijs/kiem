@@ -37,6 +37,9 @@ pub trait TransferProgress: Send + Sync {
 pub trait PeerEvents: Send + Sync {
     fn on_connected(&self, peer_id: String);
     fn on_disconnected(&self, peer_id: String);
+    /// Called whenever a sync message is sent to or received from a peer, so
+    /// the UI can show a transient "syncing" indicator.
+    fn on_sync_activity(&self, peer_id: String);
     /// An unknown peer dialed in during an open pairing window — return true to
     /// trust it. Called on a blocking thread, so the Swift side may wait on a
     /// user prompt (e.g. a semaphore released by an Allow/Deny sheet).
@@ -51,6 +54,9 @@ impl kiem_sync::MeshEvents for EventsAdapter {
     }
     fn on_disconnected(&self, peer: kiem_sync::EndpointId) {
         self.0.on_disconnected(peer.to_string());
+    }
+    fn on_sync_activity(&self, peer: kiem_sync::EndpointId) {
+        self.0.on_sync_activity(peer.to_string());
     }
     fn on_error(&self, context: &str, error: &str) {
         eprintln!("kiem sync: {context}: {error}");
@@ -432,6 +438,26 @@ impl KiemStore {
             None => Vec::new(),
         }
     }
+
+    /// Human-readable name for this device (defaults to the system host name).
+    pub fn device_name(&self) -> String {
+        kiem_sync::device_name(&self.data_dir)
+    }
+
+    /// Set the human-readable name for this device.
+    pub fn set_device_name(&self, name: String) -> Result<(), KiemError> {
+        kiem_sync::set_device_name(&self.data_dir, &name).map_err(sync_err)
+    }
+
+    /// Best-known human-readable name for a paired peer, or the peer id string
+    /// if none has been recorded.
+    pub fn peer_name(&self, peer_id: String) -> String {
+        use std::str::FromStr;
+        match kiem_sync::EndpointId::from_str(&peer_id) {
+            Ok(id) => kiem_sync::peer_name(&self.data_dir, &id).unwrap_or_else(|| peer_id.clone()),
+            Err(_) => peer_id,
+        }
+    }
 }
 
 fn sync_err(err: impl std::fmt::Display) -> KiemError {
@@ -638,6 +664,7 @@ mod tests {
     impl PeerEvents for NullEvents {
         fn on_connected(&self, _peer_id: String) {}
         fn on_disconnected(&self, _peer_id: String) {}
+        fn on_sync_activity(&self, _peer_id: String) {}
         fn approve_pairing(&self, _peer_id: String) -> bool {
             true
         }

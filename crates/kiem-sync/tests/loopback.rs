@@ -48,17 +48,23 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
         let b_seen: Arc<Mutex<Vec<kiem_sync::EndpointId>>> = Arc::new(Mutex::new(Vec::new()));
         let a_handshake = kiem_sync::PeerHandshake {
             local_ticket: kiem_sync::my_ticket(&a_ep).to_string(),
+            local_name: "A".into(),
             on_peer: {
                 let seen = a_seen.clone();
                 Arc::new(move |addr| seen.lock().unwrap().push(addr.id))
             },
+            on_name: Arc::new(|_peer, _name| {}),
+            on_sync_activity: Arc::new(|_peer| {}),
         };
         let b_handshake = kiem_sync::PeerHandshake {
             local_ticket: kiem_sync::my_ticket(&b_ep).to_string(),
+            local_name: "B".into(),
             on_peer: {
                 let seen = b_seen.clone();
                 Arc::new(move |addr| seen.lock().unwrap().push(addr.id))
             },
+            on_name: Arc::new(|_peer, _name| {}),
+            on_sync_activity: Arc::new(|_peer| {}),
         };
 
         let accept_task = tokio::spawn({

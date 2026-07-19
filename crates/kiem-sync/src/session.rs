@@ -16,7 +16,7 @@ use std::time::Duration;
 use iroh::endpoint::{
     Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError,
 };
-use iroh::EndpointAddr;
+use iroh::{EndpointAddr, EndpointId};
 use kiem_core::store::NoteStore;
 use kiem_core::sync::{SyncEngine, SyncError};
 
@@ -31,15 +31,21 @@ const MAX_PAYLOAD_LEN: u32 = 64 * 1024 * 1024;
 /// carries its own `EndpointTicket` under this id so trust reciprocates in a
 /// single connection. The `_kiem/` prefix keeps it clear of note UUIDs.
 const PAIRING_HELLO: &str = "_kiem/pair";
+const NAME_HELLO: &str = "_kiem/name";
 
 /// Per-connection pairing handshake. `local_ticket` is this device's shareable
 /// ticket (sent first thing on every connection); `on_peer` records the peer's
 /// address into the trust list once, after it's been checked against the
-/// iroh-authenticated peer id. One connect ⇒ both sides trust each other.
+/// iroh-authenticated peer id. `local_name` is a human-readable device name,
+/// and `on_name` stores the name we learn from the peer. One connect ⇒ both
+/// sides trust each other.
 #[derive(Clone)]
 pub struct PeerHandshake {
     pub local_ticket: String,
+    pub local_name: String,
     pub on_peer: Arc<dyn Fn(EndpointAddr) + Send + Sync>,
+    pub on_name: Arc<dyn Fn(EndpointId, String) + Send + Sync>,
+    pub on_sync_activity: Arc<dyn Fn(EndpointId) + Send + Sync>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -86,13 +92,16 @@ pub async fn run(
         connection.accept_bi().await?
     };
 
-    // Pairing prelude: send our own ticket first, then read the peer's. The
-    // dialer's write is also what opens the lazily-created QUIC stream and lets
-    // the acceptor's accept_bi complete. We record the peer's address only if
-    // the ticket's id matches the id iroh already authenticated on this
-    // connection — so a peer can't push someone else's address into our trust
-    // list.
+    // Pairing prelude: send our own ticket and name, then read the peer's ticket.
+    // The dialer's first write is also what opens the lazily-created QUIC
+    // stream and lets the acceptor's accept_bi complete. We record the peer's
+    // address only if the ticket's id matches the id iroh already authenticated
+    // on this connection — so a peer can't push someone else's address into our
+    // trust list. The name frame is read by the normal reader loop and routed
+    // to `on_name` so older peers that don't send one are harmless.
     write_frame(&mut send, PAIRING_HELLO, handshake.local_ticket.as_bytes()).await?;
+    write_frame(&mut send, NAME_HELLO, handshake.local_name.as_bytes()).await?;
+
     let (marker, payload) = read_frame(&mut recv).await?;
     if marker == PAIRING_HELLO {
         if let Ok(addr) = peers::parse_ticket(&String::from_utf8_lossy(&payload)) {
@@ -102,16 +111,18 @@ pub async fn run(
         }
     }
 
+
     let send = Arc::new(tokio::sync::Mutex::new(send));
 
     let ticker = tokio::spawn(ticker_loop(
         state.clone(),
-        peer.clone(),
+        peer_id,
         send.clone(),
         interval,
+        handshake.on_sync_activity.clone(),
     ));
 
-    let result = reader_loop(&mut recv, &state, &peer, &send).await;
+    let result = reader_loop(&mut recv, &state, peer_id, &send, &handshake).await;
 
     state.lock().unwrap().1.forget_peer(&peer);
     ticker.abort();
@@ -120,15 +131,16 @@ pub async fn run(
 
 async fn ticker_loop(
     state: SharedState,
-    peer: String,
+    peer_id: EndpointId,
     send: Arc<tokio::sync::Mutex<SendStream>>,
     interval: Duration,
+    on_activity: Arc<dyn Fn(EndpointId) + Send + Sync>,
 ) {
     // First round immediately: on the dialed side this is what actually
     // transmits the lazily-opened QUIC stream, letting the acceptor's
     // accept_bi complete (and it cuts first-sync latency by one interval).
     loop {
-        if sync_round(&state, &peer, &send).await.is_err() {
+        if sync_round(&state, peer_id, &send, &*on_activity).await.is_err() {
             return;
         }
         tokio::time::sleep(interval).await;
@@ -138,14 +150,16 @@ async fn ticker_loop(
 /// One sync round: offer every known document to the peer.
 async fn sync_round(
     state: &SharedState,
-    peer: &str,
+    peer_id: EndpointId,
     send: &tokio::sync::Mutex<SendStream>,
+    on_activity: &(dyn Fn(EndpointId) + Send + Sync),
 ) -> Result<(), SessionError> {
+    let peer = peer_id.to_string();
     let frames = {
         let (store, engine) = &mut *state.lock().unwrap();
         let mut frames = Vec::new();
         for doc_id in engine.doc_ids(store)? {
-            if let Some(payload) = engine.generate_message(store, peer, &doc_id)? {
+            if let Some(payload) = engine.generate_message(store, &peer, &doc_id)? {
                 frames.push((doc_id, payload));
             }
         }
@@ -155,26 +169,35 @@ async fn sync_round(
     for (doc_id, payload) in frames {
         write_frame(&mut send, &doc_id, &payload).await?;
     }
+    on_activity(peer_id);
     Ok(())
 }
 
 async fn reader_loop(
     recv: &mut RecvStream,
     state: &SharedState,
-    peer: &str,
+    peer_id: EndpointId,
     send: &tokio::sync::Mutex<SendStream>,
+    handshake: &PeerHandshake,
 ) -> Result<(), SessionError> {
+    let peer = peer_id.to_string();
     loop {
         let (doc_id, payload) = read_frame(recv).await?;
+        if doc_id == NAME_HELLO {
+            let name = String::from_utf8_lossy(&payload).into_owned();
+            (handshake.on_name)(peer_id, name);
+            continue;
+        }
         let reply = {
             let (store, engine) = &mut *state.lock().unwrap();
-            engine.receive_message(store, peer, &doc_id, &payload)?;
-            engine.generate_message(store, peer, &doc_id)?
+            engine.receive_message(store, &peer, &doc_id, &payload)?;
+            engine.generate_message(store, &peer, &doc_id)?
         };
         if let Some(reply_payload) = reply {
             let mut send = send.lock().await;
             write_frame(&mut send, &doc_id, &reply_payload).await?;
         }
+        (handshake.on_sync_activity)(peer_id);
     }
 }
 

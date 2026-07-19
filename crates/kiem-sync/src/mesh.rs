@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use iroh::endpoint::Connection;
 
+use crate::names::{device_name, set_peer_name};
 use crate::peers::{self, KnownPeers, PeersError};
 use crate::session::{self, PeerHandshake, SessionError, SharedState};
 use crate::{endpoint, identity, Endpoint, EndpointAddr, EndpointId, IdentityError};
@@ -33,6 +34,9 @@ pub enum MeshError {
 pub trait MeshEvents: Send + Sync + 'static {
     fn on_connected(&self, _peer: EndpointId) {}
     fn on_disconnected(&self, _peer: EndpointId) {}
+    /// A sync message was just sent to or received from the peer. Use it to
+    /// drive a transient "syncing" indicator in the UI.
+    fn on_sync_activity(&self, _peer: EndpointId) {}
     /// A connect/accept attempt failed. `context` is e.g. "accept" or a
     /// dialed peer id; non-fatal — the mesh keeps retrying.
     fn on_error(&self, _context: &str, _error: &str) {}
@@ -209,32 +213,55 @@ impl Mesh {
     /// handful of personal devices; add a file lock if that ever changes.
     fn peer_handshake(self: &Arc<Self>) -> PeerHandshake {
         let peers_path = self.data_dir.join(PEERS_FILE);
-        let weak = Arc::downgrade(self);
+        let data_dir = self.data_dir.clone();
+        let local_name = device_name(&data_dir);
         PeerHandshake {
             local_ticket: peers::my_ticket(&self.endpoint).to_string(),
-            on_peer: Arc::new(move |addr: EndpointAddr| {
-                // Record the peer so we can reach it again. A write failure here
-                // means a just-paired device silently wouldn't be remembered —
-                // surface it rather than swallow it.
-                match KnownPeers::load(&peers_path)
-                    .and_then(|mut known| known.add(&peers_path, addr.clone()))
-                {
-                    Ok(()) => {}
-                    Err(err) => {
-                        if let Some(mesh) = weak.upgrade() {
-                            mesh.events.on_error("pair-record", &err.to_string());
+            local_name,
+            on_peer: {
+                let weak = Arc::downgrade(self);
+                Arc::new(move |addr: EndpointAddr| {
+                    // Record the peer so we can reach it again. A write failure here
+                    // means a just-paired device silently wouldn't be remembered —
+                    // surface it rather than swallow it.
+                    match KnownPeers::load(&peers_path)
+                        .and_then(|mut known| known.add(&peers_path, addr.clone()))
+                    {
+                        Ok(()) => {}
+                        Err(err) => {
+                            if let Some(mesh) = weak.upgrade() {
+                                mesh.events.on_error("pair-record", &err.to_string());
+                            }
                         }
                     }
-                }
-                // Keep the link alive after pairing: start a guarded dial loop
-                // for the peer (it dials or no-ops by id ordering, deduped by
-                // `dialing`), so a dropped connection reconnects without waiting
-                // for a restart — including when this (show) side is the smaller
-                // id and would otherwise never dial.
-                if let Some(mesh) = weak.upgrade() {
-                    mesh.dial(addr);
-                }
-            }),
+                    // Keep the link alive after pairing: start a guarded dial loop
+                    // for the peer (it dials or no-ops by id ordering, deduped by
+                    // `dialing`), so a dropped connection reconnects without waiting
+                    // for a restart — including when this (show) side is the smaller
+                    // id and would otherwise never dial.
+                    if let Some(mesh) = weak.upgrade() {
+                        mesh.dial(addr);
+                    }
+                })
+            },
+            on_name: {
+                let weak = Arc::downgrade(self);
+                Arc::new(move |peer: EndpointId, name: String| {
+                    if let Some(mesh) = weak.upgrade() {
+                        if let Err(err) = set_peer_name(&mesh.data_dir, &peer, &name) {
+                            mesh.events.on_error("peer-name", &err.to_string());
+                        }
+                    }
+                })
+            },
+            on_sync_activity: {
+                let weak = Arc::downgrade(self);
+                Arc::new(move |peer: EndpointId| {
+                    if let Some(mesh) = weak.upgrade() {
+                        mesh.events.on_sync_activity(peer);
+                    }
+                })
+            },
         }
     }
 }

@@ -10,8 +10,12 @@ struct SyncSettingsView: View {
     @Bindable var model: KiemModel
     @State private var mode: Mode = .show
     @State private var pastedTicket = ""
+    @State private var editingDeviceName = ""
+    @State private var isEditingDeviceName = false
 
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    /// How long a peer stays in the "syncing" state after the last activity.
+    private static let syncingTimeout: TimeInterval = 2
 
     enum Mode {
         case show, add
@@ -19,9 +23,14 @@ struct SyncSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Status") {
-                statusRow
+            Section("This device") {
+                thisDeviceRow
             }
+
+            Section("Paired devices") {
+                peerList
+            }
+
             Section("Pair a device") {
                 Picker("", selection: $mode) {
                     Text("Show this Mac").tag(Mode.show)
@@ -37,7 +46,7 @@ struct SyncSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 520)
+        .frame(width: 440, height: 560)
         .onAppear { model.armPairingWindow() }
         .onDisappear { model.closePairingWindow() }
         .onReceive(tick) { _ in
@@ -45,21 +54,80 @@ struct SyncSettingsView: View {
         }
     }
 
-    // MARK: Status
+    // MARK: This device
 
-    @ViewBuilder private var statusRow: some View {
-        let known = model.knownPeers.count
-        let connected = model.connectedPeers.count
-        if known == 0 {
+    @ViewBuilder private var thisDeviceRow: some View {
+        if isEditingDeviceName {
+            HStack {
+                TextField("Device name", text: $editingDeviceName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Save") {
+                    model.setDeviceName(editingDeviceName)
+                    isEditingDeviceName = false
+                }
+                .disabled(editingDeviceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Cancel") {
+                    isEditingDeviceName = false
+                }
+            }
+        } else {
+            HStack {
+                Label(model.deviceName.isEmpty ? "This Mac" : model.deviceName, systemImage: "laptopcomputer")
+                Spacer()
+                Button("Rename") {
+                    editingDeviceName = model.deviceName
+                    isEditingDeviceName = true
+                }
+            }
+        }
+    }
+
+    // MARK: Peer list
+
+    @ViewBuilder private var peerList: some View {
+        let known = model.knownPeers
+        if known.isEmpty {
             Label("No devices paired yet", systemImage: "point.3.connected.trianglepath.dotted")
                 .foregroundStyle(.secondary)
         } else {
-            Label(
-                "\(connected) of \(known) paired device\(known == 1 ? "" : "s") connected",
-                systemImage: connected > 0 ? "checkmark.circle.fill" : "circle.dashed"
-            )
-            .foregroundStyle(connected > 0 ? Color.green : Color.secondary)
+            ForEach(known, id: \.self) { peerId in
+                peerRow(peerId: peerId)
+            }
         }
+    }
+
+    private func peerRow(peerId: String) -> some View {
+        let connected = model.connectedPeers.contains(peerId)
+        let syncing = isSyncing(peerId: peerId)
+        let name = model.peerName(for: peerId)
+        let subtitle = connected
+            ? (syncing ? "Syncing" : "Connected")
+            : "Offline"
+
+        return HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.body)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(connected ? (syncing ? .blue : .green) : .secondary)
+            }
+            Spacer()
+            if syncing {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: connected ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(connected ? .green : .secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func isSyncing(peerId: String) -> Bool {
+        guard let last = model.lastSyncActivity[peerId] else { return false }
+        return Date().timeIntervalSince(last) < Self.syncingTimeout
     }
 
     // MARK: Show this Mac
