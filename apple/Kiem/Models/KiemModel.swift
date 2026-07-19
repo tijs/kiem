@@ -519,10 +519,18 @@ final class KiemModel {
         summary: @escaping @Sendable (TransferSummary) -> String
     ) {
         guard activeTransfer == nil else { return }
+        // The transfer holds the store lock for its whole run; a debounced
+        // edit flushing on the main actor mid-transfer would block the UI on
+        // that lock. Flush now, while the lock is still free — the modal
+        // progress sheet prevents new edits until the transfer ends.
+        flushPendingEdit()
         activeTransfer = TransferActivity(verb: verb)
         let relay = TransferProgressRelay { [weak self] done, total in
             Task { @MainActor in
                 guard var transfer = self?.activeTransfer else { return }
+                // Independent task hops aren't FIFO — drop a late, smaller
+                // update instead of walking the bar backwards.
+                guard done > transfer.done || total != transfer.total else { return }
                 transfer.done = done
                 transfer.total = total
                 self?.activeTransfer = transfer
@@ -532,15 +540,34 @@ final class KiemModel {
             let result = Result { try work(relay) }
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.activeTransfer = nil
                 switch result {
                 case let .success(transferred):
                     self.refresh()
-                    self.transferMessage = summary(transferred)
+                    self.pendingTransferOutcome = (summary(transferred), isError: false)
                 case let .failure(error):
-                    self.errorMessage = "\(error)"
+                    self.pendingTransferOutcome = ("\(error)", isError: true)
                 }
+                // Dropping activeTransfer dismisses the progress sheet; the
+                // outcome alert waits for the sheet's onDismiss — presenting
+                // it while the sheet is still tearing down can silently drop
+                // it on macOS.
+                self.activeTransfer = nil
             }
+        }
+    }
+
+    /// The finished transfer's result, held until the progress sheet is fully
+    /// dismissed (see `runTransfer`).
+    private var pendingTransferOutcome: (message: String, isError: Bool)?
+
+    /// Called from the progress sheet's `onDismiss`: surface the held outcome.
+    func transferSheetDismissed() {
+        guard let (message, isError) = pendingTransferOutcome else { return }
+        pendingTransferOutcome = nil
+        if isError {
+            errorMessage = message
+        } else {
+            transferMessage = message
         }
     }
 
@@ -589,15 +616,6 @@ final class KiemModel {
         }) else { return }
         refresh()
         selectedNoteID = meta.id
-    }
-
-    func deleteNote(id: String) {
-        trashNotes([id])
-    }
-
-    /// Restore a trashed note (undo a "Move to Trash").
-    func restoreNote(id: String) {
-        restoreNotes([id])
     }
 
     // MARK: Bulk actions (multi-select context menu + drag to sidebar)

@@ -273,8 +273,10 @@ impl NoteStore {
     /// search indexing deferred to one rebuild at the end — the per-note
     /// tantivy commit and journal fsync made a 400-note import take over a
     /// minute. The search index is parked (`Option::take`) for the duration,
-    /// so the per-note indexing branches skip naturally; on error the
-    /// transaction rolls back and the index was never touched.
+    /// so the per-note indexing branches skip naturally; on error (or a panic
+    /// in `work`) the transaction rolls back, the index untouched and restored.
+    ///
+    /// Not re-entrant: a nested `bulk` fails at its inner BEGIN.
     pub fn bulk<T, E: From<StoreError>>(
         &mut self,
         work: impl FnOnce(&mut Self) -> Result<T, E>,
@@ -283,14 +285,29 @@ impl NoteStore {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| E::from(StoreError::from(e)))?;
         let parked_search = self.search.take();
-        let result = work(self);
+        // Catch a panic in `work` so the parked index and open transaction
+        // don't outlive it — otherwise search is gone for good and every later
+        // write silently joins a zombie transaction. Safe to assert unwind
+        // safety: both invariants are restored right here before re-raising.
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
         self.search = parked_search;
+        let result = match caught {
+            Ok(result) => result,
+            Err(payload) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                std::panic::resume_unwind(payload);
+            }
+        };
         match result {
             Ok(value) => {
-                self.conn
-                    .execute_batch("COMMIT")
-                    .map_err(|e| E::from(StoreError::from(e)))?;
+                if let Err(e) = self.conn.execute_batch("COMMIT") {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(E::from(StoreError::from(e)));
+                }
                 if self.search.is_some() {
+                    // A rebuild failure here surfaces as Err even though the
+                    // data committed fine — confusing but data-safe (a retry
+                    // re-reports the notes as duplicates).
                     self.rebuild_search_index().map_err(E::from)?;
                 }
                 Ok(value)

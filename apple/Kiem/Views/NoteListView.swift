@@ -175,10 +175,7 @@ struct NoteListView: View {
                 }
             }
             Divider()
-            Button(
-                ids.count == 1 ? "Move to Trash" : "Move \(ids.count) Notes to Trash",
-                role: .destructive
-            ) {
+            Button(trashButtonTitle(ids), role: .destructive) {
                 model.trashNotes(ids)
             }
         }
@@ -225,14 +222,21 @@ struct NoteListView: View {
         return sections
     }
 
+    @ViewBuilder
     private func noteRow(_ note: NoteMetadata) -> some View {
         // A project's own note list already implies the project — the tag
         // there is duplicate info, so show status (the more useful
         // at-a-glance signal for a plan) in its place when present. Other
         // views (All Notes, tag filters, smart filters) keep showing tags.
-        NoteRow(note: note, showStatusInsteadOfTags: model.isViewingProject)
+        let row = NoteRow(note: note, showStatusInsteadOfTags: model.isViewingProject)
             .tag(note.id)
-            .draggable(dragPayload(for: note))
+        if model.isViewingTrash {
+            // Trashed notes only restore (mirroring the context menu) — a drag
+            // onto a project/tag/Pinned would silently mutate a hidden note.
+            row
+        } else {
+            row.draggable(dragPayload(for: note))
+        }
     }
 
     /// Drag payload: newline-joined note ids. Dragging a selected row drags

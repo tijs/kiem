@@ -543,3 +543,33 @@ fn set_note_type_reclassifies_and_persists_to_the_column() {
         "note"
     );
 }
+
+#[test]
+fn bulk_error_or_panic_rolls_back_and_leaves_the_store_usable() {
+    let mut store = NoteStore::open_in_memory_with_search().unwrap();
+
+    // Error inside the closure: ROLLBACK, and the parked search index restored.
+    let err = store
+        .bulk(|store| -> Result<(), StoreError> {
+            store.create_note("# Doomed", DID)?;
+            Err(StoreError::NotFound("boom".into()))
+        })
+        .unwrap_err();
+    assert!(matches!(err, StoreError::NotFound(_)));
+    assert!(store.list_notes().unwrap().is_empty(), "must roll back");
+
+    // Panic inside the closure: same guarantees, then the panic propagates.
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = store.bulk(|store| -> Result<(), StoreError> {
+            store.create_note("# Doomed too", DID)?;
+            panic!("boom");
+        });
+    }));
+    assert!(panicked.is_err());
+    assert!(store.list_notes().unwrap().is_empty(), "must roll back");
+
+    // No zombie transaction and search survived: a plain write commits and
+    // is findable.
+    let meta = store.create_note("# Survivor", DID).unwrap();
+    assert_eq!(store.search("survivor", 10).unwrap()[0].note_id, meta.id);
+}

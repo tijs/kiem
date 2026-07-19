@@ -97,8 +97,9 @@ private struct SidebarRow: View {
 
     @State private var isDropTargeted = false
 
+    @ViewBuilder
     var body: some View {
-        HStack {
+        let label = HStack {
             Label(title, systemImage: systemImage)
             Spacer()
             if let count, count > 0 {
@@ -107,18 +108,22 @@ private struct SidebarRow: View {
                     .monospacedDigit()
             }
         }
-        .dropDestination(for: String.self) { payloads, _ in
-            guard let onDropNotes else { return false }
-            let ids = Set(payloads.flatMap { $0.split(separator: "\n").map(String.init) })
-            guard !ids.isEmpty else { return false }
-            onDropNotes(ids)
-            return true
-        } isTargeted: { targeted in
-            isDropTargeted = targeted && onDropNotes != nil
+        // No handler → no drop modifier at all: a registered-but-inert target
+        // would still show an accepting drag cursor and swallow the drop.
+        if let onDropNotes {
+            label
+                .dropDestination(for: String.self) { payloads, _ in
+                    let ids = Set(payloads.flatMap { $0.split(separator: "\n").map(String.init) })
+                    guard !ids.isEmpty else { return false }
+                    onDropNotes(ids)
+                    return true
+                } isTargeted: { isDropTargeted = $0 }
+                .background(
+                    isDropTargeted ? Color.accentColor.opacity(0.25) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 5)
+                )
+        } else {
+            label
         }
-        .background(
-            isDropTargeted ? Color.accentColor.opacity(0.25) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 5)
-        )
     }
 }

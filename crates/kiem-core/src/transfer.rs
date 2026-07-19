@@ -217,23 +217,22 @@ pub fn import_with_progress(
             };
             // Untagged imports ("" key) compare against every note — with no
             // project to scope to, a duplicate is any note with the same body.
-            let bodies = match existing.entry(tag.clone().unwrap_or_default()) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    let mut set = HashSet::new();
-                    let known = match &tag {
-                        Some(tag) => store.list_by_tag(tag)?,
-                        None => store.list_notes()?,
-                    };
-                    for m in known {
-                        let note = store
-                            .get_note(&m.id)?
-                            .ok_or_else(|| StoreError::NotFound(m.id.clone()))?;
-                        set.insert(note.body.as_str().to_string());
-                    }
-                    v.insert(set)
+            let key = tag.clone().unwrap_or_default();
+            if !existing.contains_key(&key) {
+                let known = match &tag {
+                    Some(tag) => store.list_by_tag(tag)?,
+                    None => store.list_notes()?,
+                };
+                let mut set = HashSet::new();
+                for m in known {
+                    let note = store
+                        .get_note(&m.id)?
+                        .ok_or_else(|| StoreError::NotFound(m.id.clone()))?;
+                    set.insert(note.body.as_str().to_string());
                 }
-            };
+                existing.insert(key.clone(), set);
+            }
+            let bodies = existing.get_mut(&key).expect("just inserted");
             if bodies.contains(&body) {
                 skipped_duplicates += 1;
             } else {
@@ -387,8 +386,15 @@ mod tests {
         store.create_note("# Escapee\n\n#proj//sub", "t").unwrap();
 
         let out = tempfile::tempdir().unwrap();
-        let (written, skipped) = export_all(&store, out.path()).unwrap();
+        let mut seen = Vec::new();
+        let (written, skipped) = export_all_with_progress(&store, out.path(), &mut |d, t| {
+            seen.push((d, t));
+        })
+        .unwrap();
         assert_eq!((written, skipped), (4, 1));
+        // Progress counts every listed note (skipped ones included), so a
+        // bar driven by it always reaches 100%.
+        assert_eq!(seen, vec![(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)]);
 
         let mut demo: Vec<String> = std::fs::read_dir(out.path().join("demo"))
             .unwrap()
@@ -560,6 +566,9 @@ mod tests {
         // A flat dump: no project should be minted from any folder name.
         std::fs::write(root.join("groceries.md"), "# Groceries\n\nmilk #errands").unwrap();
         std::fs::write(root.join("archive/old.md"), "# Old").unwrap();
+        // Identical body twice IN the batch: the second file must dedupe
+        // against the first one's just-created note, not slip through.
+        std::fs::write(root.join("groceries-copy.md"), "# Groceries\n\nmilk #errands").unwrap();
 
         let (_guard, mut store) = new_store();
         // An identical note already in the store, in NO project — the
@@ -568,7 +577,7 @@ mod tests {
 
         let (created, skipped) = import(&mut store, &root, "t", ProjectSource::None).unwrap();
         assert_eq!(created.len(), 1);
-        assert_eq!(skipped, 1);
+        assert_eq!(skipped, 2, "store-wide dupe + intra-batch dupe");
         let groceries = &created[0].1;
         assert_eq!(groceries.title, "Groceries");
         // Bulk import defers indexing to one rebuild — search must still see
@@ -591,7 +600,7 @@ mod tests {
                 seen.push((d, t));
             })
             .unwrap();
-        assert_eq!(seen, vec![(1, 2), (2, 2)]);
+        assert_eq!(seen, vec![(1, 3), (2, 3), (3, 3)]);
     }
 
     #[test]

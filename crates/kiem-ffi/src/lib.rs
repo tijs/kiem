@@ -541,6 +541,41 @@ mod tests {
     }
 
     #[test]
+    fn folders_as_projects_flag_routes_to_the_right_import_mode() {
+        // A file with NO inline tag, so the only possible proj/* tag is the
+        // one the Folders mode mints from the directory name — this is what
+        // actually discriminates the bool (the round-trip test's bodies carry
+        // their tags inline and pass under either mode).
+        let dump = tempfile::tempdir().unwrap();
+        std::fs::write(dump.path().join("plain.md"), "# Plain").unwrap();
+        let dir = dump.path().to_string_lossy().into_owned();
+
+        let (_d1, flat) = open_temp();
+        flat.import_notes(dir.clone(), "t".into(), false, Arc::new(NoProgress))
+            .unwrap();
+        assert!(
+            flat.get_tags()
+                .unwrap()
+                .iter()
+                .all(|t| !t.tag.starts_with("proj/")),
+            "false must not mint a project"
+        );
+
+        let (_d2, foldered) = open_temp();
+        foldered
+            .import_notes(dir, "t".into(), true, Arc::new(NoProgress))
+            .unwrap();
+        assert!(
+            foldered
+                .get_tags()
+                .unwrap()
+                .iter()
+                .any(|t| t.tag.starts_with("proj/")),
+            "true must mint a project from the folder"
+        );
+    }
+
+    #[test]
     fn transfer_errors_map_to_the_transfer_variant() {
         let (_dir, store) = open_temp();
         match store.import_notes(

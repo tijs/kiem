@@ -113,11 +113,15 @@ struct ContentView: View {
         } message: {
             Text(model.transferMessage ?? "")
         }
-        // Not user-dismissable: transfers can't be cancelled mid-flight.
+        // Not user-dismissable: transfers can't be cancelled mid-flight. The
+        // outcome alert presents from onDismiss — after the sheet is fully
+        // gone, so the two presentations never race.
         .sheet(isPresented: Binding(
             get: { model.activeTransfer != nil },
             set: { _ in }
-        )) {
+        ), onDismiss: {
+            model.transferSheetDismissed()
+        }) {
             TransferProgressView(model: model)
                 .interactiveDismissDisabled()
         }
