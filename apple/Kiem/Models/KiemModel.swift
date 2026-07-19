@@ -584,16 +584,16 @@ final class KiemModel {
         for ch in raw {
             // Mirror Rust's `to_ascii_lowercase`: only A–Z fold; everything else
             // is left as-is and then dropped if non-ASCII.
-            let c: Character
-            if let a = ch.asciiValue, (65 ... 90).contains(a) {
-                c = Character(UnicodeScalar(a + 32))
+            let out: Character
+            if let byte = ch.asciiValue, (65 ... 90).contains(byte) {
+                out = Character(UnicodeScalar(byte + 32))
             } else {
-                c = ch
+                out = ch
             }
-            if let a = c.asciiValue, (97 ... 122).contains(a) || (48 ... 57).contains(a) || c == "/" {
-                slug.append(c)
+            if let byte = out.asciiValue, (97 ... 122).contains(byte) || (48 ... 57).contains(byte) || out == "/" {
+                slug.append(out)
                 prevSep = false
-            } else if c == " " || c == "-" || c == "_" {
+            } else if out == " " || out == "-" || out == "_" {
                 if !prevSep && !slug.isEmpty {
                     slug.append("_")
                     prevSep = true
@@ -616,6 +616,19 @@ final class KiemModel {
         }) else { return }
         refresh()
         selectedNoteID = meta.id
+    }
+
+    /// Open a note from a `kiem://note/<id>` reference. Trashed notes land in
+    /// Trash so the user sees the deleted state; live notes land in All Notes.
+    /// Unknown ids surface an error without changing the current selection.
+    func openNote(id: String) {
+        guard let note = report({ try store.getNote(id: id) }) ?? nil else {
+            errorMessage = "No note found for that reference."
+            return
+        }
+        selection = note.metadata.deleted ? .filter(.trash) : .allNotes
+        refresh()
+        selectedNoteID = id
     }
 
     // MARK: Bulk actions (multi-select context menu + drag to sidebar)

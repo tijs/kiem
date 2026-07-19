@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added: `kiem://note/<id>` references round-trip between the app and the terminal. Right-click a note (or multi-selection) in the app and choose "Copy Reference" to copy `kiem://note/<id>` to the pasteboard; paste it in a terminal and cmd+click to open that note in Kiem. The `kiem` CLI accepts these references anywhere it takes a note id (`show`, `edit`, `delete`, `todo`, `note set-type`, `bulk --id`, etc.). Trashed-note references open the note in the Trash filter, and the app stashes an incoming reference if the store is still starting up.
+
 - Fixed: a pending editor edit could freeze the app when an import/export started — the debounced save is now flushed before the transfer takes the store lock. The transfer's summary alert also waits for the progress sheet to fully close, so it can no longer be dropped.
 - Fixed: notes in the Trash can no longer be dragged onto projects, tags, or Pinned — trashed notes only restore, matching the right-click menu. Sidebar rows that take no drops (Todo, Today, Untagged) no longer show an accepting drag cursor.
 - Fixed: a panic or commit failure during a bulk import no longer leaves the store with an open transaction and search disabled — the transaction rolls back and the search index is restored.

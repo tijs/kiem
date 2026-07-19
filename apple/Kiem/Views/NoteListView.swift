@@ -155,30 +155,42 @@ struct NoteListView: View {
     private func selectionMenu(_ ids: Set<String>) -> some View {
         if ids.isEmpty {
             EmptyView()
-        } else if model.isViewingTrash {
-            Button(ids.count == 1 ? "Restore" : "Restore \(ids.count) Notes") {
-                model.restoreNotes(ids)
-            }
         } else {
-            let selected = model.notes.filter { ids.contains($0.id) }
-            let allPinned = !selected.isEmpty && selected.allSatisfy(\.pinned)
-            Button(allPinned ? "Unpin" : "Pin") {
-                model.setPinned(ids, pinned: !allPinned)
+            Button(ids.count == 1 ? "Copy Reference" : "Copy References") {
+                copyReferences(ids)
             }
-            if !model.projects.isEmpty {
-                Menu("Add to Project") {
-                    ForEach(model.projects, id: \.tag) { entry in
-                        Button(KiemModel.projectName(entry.tag)) {
-                            model.addTag(ids, tag: entry.tag)
+            if model.isViewingTrash {
+                Button(ids.count == 1 ? "Restore" : "Restore \(ids.count) Notes") {
+                    model.restoreNotes(ids)
+                }
+            } else {
+                let selected = model.notes.filter { ids.contains($0.id) }
+                let allPinned = !selected.isEmpty && selected.allSatisfy(\.pinned)
+                Button(allPinned ? "Unpin" : "Pin") {
+                    model.setPinned(ids, pinned: !allPinned)
+                }
+                if !model.projects.isEmpty {
+                    Menu("Add to Project") {
+                        ForEach(model.projects, id: \.tag) { entry in
+                            Button(KiemModel.projectName(entry.tag)) {
+                                model.addTag(ids, tag: entry.tag)
+                            }
                         }
                     }
                 }
-            }
-            Divider()
-            Button(trashButtonTitle(ids), role: .destructive) {
-                model.trashNotes(ids)
+                Divider()
+                Button(trashButtonTitle(ids), role: .destructive) {
+                    model.trashNotes(ids)
+                }
             }
         }
+    }
+
+    /// Copy one `kiem://note/<id>` reference per selected note to the pasteboard.
+    private func copyReferences(_ ids: Set<String>) {
+        let refs = ids.sorted().map { "kiem://note/\($0)" }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(refs, forType: .string)
     }
 
     /// Open todos chunked into runs by source note, preserving store order
@@ -279,15 +291,17 @@ private struct CommandDeleteMonitor: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_: NSView, context _: Context) {}
 
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+    static func dismantleNSView(_: NSView, coordinator: Coordinator) {
         if let monitor = coordinator.monitor {
             NSEvent.removeMonitor(monitor)
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
 
     final class Coordinator {
         var monitor: Any?

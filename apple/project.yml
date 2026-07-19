@@ -80,6 +80,10 @@ targets:
         # on the LAN. (The old _kiem._tcp NSBonjourServices entry left with the
         # Bonjour discovery stack — iroh pairs by ticket, no service browsing.)
         NSLocalNetworkUsageDescription: "Kiem syncs your notes directly with your paired Kiem devices on your local network."
+        CFBundleURLTypes:
+          - CFBundleURLName: org.tijs.kiem.note
+            CFBundleURLSchemes:
+              - kiem
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.tijs.kiem

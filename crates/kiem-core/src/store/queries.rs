@@ -188,7 +188,8 @@ impl NoteStore {
 
     /// All unchecked todo items across live notes carrying `tag`, in note-list
     /// order (most recently modified first) then document order. Each item's
-    /// `(note_id, index)` addresses it for [`set_todo_checked`](Self::set_todo_checked).
+    /// `(note_id, index)` addresses all checkbox lines, including checked ones,
+    /// so the index remains stable after an earlier item is checked.
     pub fn list_todo_items_for_tag(&self, tag: &str) -> Result<Vec<ProjectTodo>, StoreError> {
         let metas = self.list_by_tag(tag)?;
         self.unchecked_todo_items(metas)

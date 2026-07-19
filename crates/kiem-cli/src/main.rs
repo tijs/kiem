@@ -301,20 +301,26 @@ fn run() -> Result<()> {
             }
         }
         Command::Todo { action } => {
-            let (note_id, index, checked) = match action {
+            let (note_id, indices, checked) = match action {
                 TodoAction::Add { .. } => unreachable!("handled above"),
-                TodoAction::Check { note_id, index } => (note_id, index, true),
-                TodoAction::Uncheck { note_id, index } => (note_id, index, false),
+                TodoAction::Check { note_id, indices } => (note_id, indices, true),
+                TodoAction::Uncheck { note_id, indices } => (note_id, indices, false),
             };
             let meta = store
-                .set_todo_checked(&note_id, index, checked)
+                .set_todos_checked(&note_id, &indices, checked)
                 .map_err(not_found_context(&note_id))?;
             if cli.json {
-                print_json(&json!({"id": meta.id, "index": index, "checked": checked}))?;
+                print_json(&json!({"id": meta.id, "indices": indices, "checked": checked}))?;
             } else {
                 let verb = if checked { "Checked" } else { "Unchecked" };
+                let noun = if indices.len() == 1 { "todo" } else { "todos" };
+                let positions = indices
+                    .iter()
+                    .map(usize::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 println!(
-                    "{verb} todo {index} in {} ({})",
+                    "{verb} {noun} {positions} in {} ({})",
                     display_title(&meta),
                     meta.id
                 );

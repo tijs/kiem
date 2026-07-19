@@ -8,6 +8,7 @@ struct KiemApp: App {
     @State private var startupError: String?
     @State private var cliInstallMessage: String?
     @State private var cliShadowPath: String?
+    @State private var pendingOpenNoteID: String?
     private static let cliShadowDismissedKey = "kiem.cliShadowWarningDismissed"
 
     var body: some Scene {
@@ -15,6 +16,9 @@ struct KiemApp: App {
             Group {
                 if let model {
                     ContentView(model: model)
+                        .onOpenURL { url in
+                            handleOpenURL(url)
+                        }
                 } else if let startupError {
                     ContentUnavailableView(
                         "Kiem cannot open its data directory",
@@ -102,6 +106,17 @@ struct KiemApp: App {
 
     /// Folder picker for import/export — directories only, same layout both
     /// ways (a folder is a project; see `kiem export`/`import` in the CLI).
+    private func handleOpenURL(_ url: URL) {
+        guard url.scheme == "kiem", url.host == "note" else { return }
+        let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !id.isEmpty else { return }
+        if let model {
+            model.openNote(id: id)
+        } else {
+            pendingOpenNoteID = id
+        }
+    }
+
     private static func pickFolder(prompt: String, canCreate: Bool) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -118,10 +133,10 @@ struct KiemApp: App {
         let alert = NSAlert()
         alert.messageText = "Import “\(folder.lastPathComponent)”"
         alert.informativeText = """
-            Treat folders as projects? Subfolders become projects, and \
-            top-level notes join a project named “\(folder.lastPathComponent)”. \
-            Or just import the notes, keeping only the tags they already contain.
-            """
+        Treat folders as projects? Subfolders become projects, and \
+        top-level notes join a project named “\(folder.lastPathComponent)”. \
+        Or just import the notes, keeping only the tags they already contain.
+        """
         alert.addButton(withTitle: "Folders Are Projects")
         alert.addButton(withTitle: "Just Import Notes")
         alert.addButton(withTitle: "Cancel")
@@ -139,6 +154,10 @@ struct KiemApp: App {
         let cliInstalled = CLIInstaller.ensureInstalled()
         do {
             model = try KiemModel(dataDir: KiemModel.defaultDataDir())
+            if let pendingID = pendingOpenNoteID {
+                pendingOpenNoteID = nil
+                model?.openNote(id: pendingID)
+            }
         } catch {
             startupError = "\(error)"
         }

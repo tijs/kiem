@@ -190,6 +190,48 @@ fn show_and_edit_unknown_id_fail_with_message() {
         .stderr(predicate::str::contains("note not found: no-such-id"));
 }
 
+#[test]
+fn note_ref_is_accepted_in_every_id_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(dir.path(), repo.path())
+        .args(["project", "add", "Demo"])
+        .assert()
+        .success();
+    let note = json_out(kiem_in(dir.path(), repo.path()).args([
+        "note",
+        "add",
+        "# Tasks\n- [ ] first\n- [ ] second",
+        "--json",
+    ]));
+    let id = note["id"].as_str().unwrap().to_owned();
+    let ref_ = format!("kiem://note/{id}");
+    let ref_with_slash = format!("kiem://note/{id}/");
+
+    // All forms point to the same note.
+    let from_bare = json_out(kiem(dir.path()).args(["show", &id, "--json"]));
+    let from_ref = json_out(kiem(dir.path()).args(["show", &ref_, "--json"]));
+    let from_ref_slash = json_out(kiem(dir.path()).args(["show", &ref_with_slash, "--json"]));
+    assert_eq!(from_bare["id"], id);
+    assert_eq!(from_ref["id"], id);
+    assert_eq!(from_ref_slash["id"], id);
+
+    // Todo commands also accept the reference.
+    kiem(dir.path())
+        .args(["todo", "check", &ref_, "0"])
+        .assert()
+        .success();
+    let todos = json_out(kiem_in(dir.path(), repo.path()).args(["todos", "--json"]));
+    assert_eq!(todos.as_array().unwrap().len(), 1);
+
+    // Edit and delete via ref work too. Keep the project tag so the edit is allowed.
+    kiem(dir.path())
+        .args(["edit", &ref_, "--body", "# Updated\n\n#proj/demo"])
+        .assert()
+        .success();
+    kiem(dir.path()).args(["delete", &ref_]).assert().success();
+}
+
 // -- projects & agent loop (U4, U5) --
 
 /// A kiem command run with both a data dir and a working directory (for project
@@ -301,6 +343,34 @@ fn agent_loop_add_note_list_todos_then_check() {
     let after = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
     assert_eq!(after.as_array().unwrap().len(), 1);
     assert_eq!(after[0]["text"], "second");
+}
+
+#[test]
+fn todo_check_accepts_multiple_stable_indices() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path())
+        .args(["project", "add", "Demo"])
+        .assert()
+        .success();
+
+    let note = json_out(kiem_in(data.path(), repo.path()).args([
+        "note",
+        "add",
+        "# Tasks\n- [ ] first\n- [ ] second\n- [ ] third",
+        "--json",
+    ]));
+    let note_id = note["id"].as_str().unwrap().to_owned();
+
+    kiem(data.path())
+        .args(["todo", "check", &note_id, "0", "2"])
+        .assert()
+        .success();
+    let after = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
+    let items = after.as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["index"], 1);
+    assert_eq!(items[0]["text"], "second");
 }
 
 #[test]

@@ -5,6 +5,12 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// Accept a bare note id or a `kiem://note/<id>` reference, returning the id.
+fn note_ref(s: &str) -> Result<String, String> {
+    let s = s.strip_prefix("kiem://note/").unwrap_or(s);
+    Ok(s.trim_end_matches('/').to_owned())
+}
+
 #[derive(Parser)]
 #[command(
     name = "kiem",
@@ -40,9 +46,13 @@ pub enum Command {
         tag: Option<String>,
     },
     /// Show one note (metadata + body)
-    Show { id: String },
+    Show {
+        #[arg(value_parser = note_ref)]
+        id: String,
+    },
     /// Replace a note's body from --body or stdin
     Edit {
+        #[arg(value_parser = note_ref)]
         id: String,
         #[arg(long)]
         body: Option<String>,
@@ -51,6 +61,7 @@ pub enum Command {
     /// scalar-safe edit). Pass --expect <version> from `show` to reject the edit
     /// if the note changed since you read it.
     EditLines {
+        #[arg(value_parser = note_ref)]
         id: String,
         /// First line to replace (1-based, inclusive).
         start: usize,
@@ -75,7 +86,10 @@ pub enum Command {
     /// Apply one operation to multiple notes selected by tag, project, IDs, or stdin
     Bulk(BulkArgs),
     /// Move a note to trash (soft delete)
-    Delete { id: String },
+    Delete {
+        #[arg(value_parser = note_ref)]
+        id: String,
+    },
     /// Manage projects (a project is the reserved tag proj/<slug>)
     Project {
         #[command(subcommand)]
@@ -158,7 +172,7 @@ pub struct BulkArgs {
     #[arg(long)]
     pub project: Option<String>,
     /// Select a note by ID; repeat for multiple notes
-    #[arg(long = "id")]
+    #[arg(long = "id", value_parser = note_ref)]
     pub ids: Vec<String>,
     /// Read note IDs from stdin, one per line
     #[arg(long)]
@@ -223,11 +237,25 @@ pub enum ProjectAction {
 #[derive(Subcommand)]
 pub enum TodoAction {
     /// Append a todo to a note: kiem todo add <note-id> "<text>"
-    Add { note_id: String, text: String },
-    /// Mark a todo done: kiem todo check <note-id> <index>
-    Check { note_id: String, index: usize },
-    /// Mark a todo not done: kiem todo uncheck <note-id> <index>
-    Uncheck { note_id: String, index: usize },
+    Add {
+        #[arg(value_parser = note_ref)]
+        note_id: String,
+        text: String,
+    },
+    /// Mark one or more todos done by their stable checkbox indices
+    Check {
+        #[arg(value_parser = note_ref)]
+        note_id: String,
+        #[arg(value_name = "INDEX", num_args = 1..)]
+        indices: Vec<usize>,
+    },
+    /// Mark one or more todos not done by their stable checkbox indices
+    Uncheck {
+        #[arg(value_parser = note_ref)]
+        note_id: String,
+        #[arg(value_name = "INDEX", num_args = 1..)]
+        indices: Vec<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -252,6 +280,7 @@ pub enum NoteAction {
     },
     /// Reclassify a note's kind: kiem note set-type <id> <type>
     SetType {
+        #[arg(value_parser = note_ref)]
         note_id: String,
         /// New kind (empty resets to the default note)
         note_type: String,

@@ -386,6 +386,41 @@ fn set_todo_checked_removes_item_from_aggregate_and_keeps_tags() {
 }
 
 #[test]
+fn set_todos_checked_uses_stable_indices_and_is_atomic() {
+    let mut store = store_with(&[note(
+        "a",
+        "# A\n- [ ] first\n- [ ] second\n- [ ] third",
+        "2026-06-28T10:00:00Z",
+    )]);
+
+    store.set_todos_checked("a", &[0, 2], true).unwrap();
+    let body = store
+        .get_note("a")
+        .unwrap()
+        .unwrap()
+        .body
+        .as_str()
+        .to_owned();
+    assert!(body.contains("- [x] first"));
+    assert!(body.contains("- [ ] second"));
+    assert!(body.contains("- [x] third"));
+
+    let err = store.set_todos_checked("a", &[1, 9], true);
+    assert!(matches!(err, Err(StoreError::Document { .. })));
+    let unchanged = store
+        .get_note("a")
+        .unwrap()
+        .unwrap()
+        .body
+        .as_str()
+        .to_owned();
+    assert_eq!(
+        unchanged, body,
+        "an invalid batch must not partially persist"
+    );
+}
+
+#[test]
 fn project_todos_empty_when_no_tagged_notes() {
     let store = store_with(&[]);
     assert!(store
