@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: long peer ids in the Sync settings no longer overflow the fixed-width window. The pane now scrolls vertically, the settings window can be resized wider, and ids are truncated in the middle with the full value available on hover.
+
 ## 0.1.0 - 2026-07-19
 
 - Added: `kiem://note/<id>` references round-trip between the app and the terminal. Right-click a note (or multi-selection) in the app and choose "Copy Reference" to copy `kiem://note/<id>` to the pasteboard; paste it in a terminal and cmd+click to open that note in Kiem. The `kiem` CLI accepts these references anywhere it takes a note id (`show`, `edit`, `delete`, `todo`, `note set-type`, `bulk --id`, etc.). Trashed-note references open the note in the Trash filter, and the app stashes an incoming reference if the store is still starting up.
