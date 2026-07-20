@@ -22,31 +22,33 @@ struct SyncSettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section("This device") {
-                thisDeviceRow
-            }
-
-            Section("Paired devices") {
-                peerList
-            }
-
-            Section("Pair a device") {
-                Picker("", selection: $mode) {
-                    Text("Show this Mac").tag(Mode.show)
-                    Text("Add a device").tag(Mode.add)
+        ScrollView {
+            Form {
+                Section("This device") {
+                    thisDeviceRow
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
 
-                switch mode {
-                case .show: showPane
-                case .add: addPane
+                Section("Paired devices") {
+                    peerList
+                }
+
+                Section("Pair a device") {
+                    Picker("", selection: $mode) {
+                        Text("Show this Mac").tag(Mode.show)
+                        Text("Add a device").tag(Mode.add)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    switch mode {
+                    case .show: showPane
+                    case .add: addPane
+                    }
                 }
             }
+            .formStyle(.grouped)
+            .frame(minWidth: 440, minHeight: 560)
         }
-        .formStyle(.grouped)
-        .frame(width: 440, height: 560)
         .onAppear { model.armPairingWindow() }
         .onDisappear { model.closePairingWindow() }
         .onReceive(tick) { _ in
@@ -108,6 +110,9 @@ struct SyncSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(name)
                     .font(.body)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(name)
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(connected ? (syncing ? .blue : .green) : .secondary)
