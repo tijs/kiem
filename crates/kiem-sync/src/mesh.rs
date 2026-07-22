@@ -46,6 +46,15 @@ pub enum MeshError {
 /// both bind a mesh to the same on-disk identity, and running two at once
 /// means two accept/dial loops advertising the same `EndpointId`.
 fn acquire_lock(data_dir: &Path) -> Result<File, MeshError> {
+    // `Mesh::start` may be the very first thing run against a fresh data dir
+    // (e.g. `kiem pair add` before any note has ever been created) — this
+    // used to be created as a side effect of `identity::load_or_create`,
+    // which ran first; now that the lock is acquired first, it must create
+    // the dir itself instead of failing on a missing parent.
+    std::fs::create_dir_all(data_dir).map_err(|source| MeshError::Lock {
+        path: data_dir.display().to_string(),
+        source,
+    })?;
     let path = data_dir.join(LOCK_FILE);
     let file = File::options()
         .create(true)
@@ -492,5 +501,15 @@ mod tests {
 
         drop(first);
         acquire_lock(dir.path()).expect("lock should be free again after the holder drops");
+    }
+
+    #[test]
+    fn acquire_lock_creates_a_data_dir_that_does_not_exist_yet() {
+        let root = tempfile::tempdir().unwrap();
+        let fresh = root.path().join("never-created").join("nested");
+
+        acquire_lock(&fresh).expect("should create the data dir, not require it to pre-exist");
+
+        assert!(fresh.is_dir());
     }
 }
