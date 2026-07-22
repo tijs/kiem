@@ -137,6 +137,16 @@ CREATE TABLE IF NOT EXISTS tombstone_doc (
 ";
 
 impl NoteStore {
+    /// The search index is a derived, rebuildable structure (see the `search`
+    /// module doc), never the source of truth — so a write failing here (e.g.
+    /// transient cross-process lock contention with a concurrent CLI command
+    /// or another peer's sync ticker) must never fail the note mutation that
+    /// already committed to SQLite. Log and move on, same as the sync
+    /// ticker's own best-effort `flush_search_index` handling.
+    fn log_index_failure(note_id: &str, err: SearchError) {
+        eprintln!("kiem: search index update failed for note {note_id}, will retry on next write: {err}");
+    }
+
     /// Open (or create) the full data directory: `kiem.db` plus the `search/`
     /// index. This is what CLI/app surfaces use.
     pub fn open_dir(data_dir: &Path) -> Result<Self, StoreError> {
@@ -263,7 +273,9 @@ impl NoteStore {
         }
         if let Some(index) = &mut self.search {
             if !m.deleted {
-                index.index_note(m, note.body.as_str())?;
+                if let Err(e) = index.index_note(m, note.body.as_str()) {
+                    Self::log_index_failure(&m.id, e);
+                }
             }
         }
         Ok(m.clone())
@@ -487,7 +499,9 @@ impl NoteStore {
         tx.commit()?;
         if let Some(index) = &mut self.search {
             for id in ids {
-                index.remove_note(id)?;
+                if let Err(e) = index.remove_note(id) {
+                    Self::log_index_failure(id, e);
+                }
             }
         }
         Ok(erased)
@@ -544,11 +558,14 @@ impl NoteStore {
             ],
         )?;
         if let Some(index) = &mut self.search {
-            match (m.deleted, defer_index) {
-                (true, true) => index.remove_note_deferred(&m.id)?,
-                (true, false) => index.remove_note(&m.id)?,
-                (false, true) => index.index_note_deferred(m, note.body.as_str())?,
-                (false, false) => index.index_note(m, note.body.as_str())?,
+            let result = match (m.deleted, defer_index) {
+                (true, true) => index.remove_note_deferred(&m.id),
+                (true, false) => index.remove_note(&m.id),
+                (false, true) => index.index_note_deferred(m, note.body.as_str()),
+                (false, false) => index.index_note(m, note.body.as_str()),
+            };
+            if let Err(e) = result {
+                Self::log_index_failure(&m.id, e);
             }
         }
         Ok(note.metadata)
@@ -715,10 +732,13 @@ impl NoteStore {
             ],
         )?;
         if let Some(index) = &mut self.search {
-            if m.deleted {
-                index.remove_note(&m.id)?;
+            let result = if m.deleted {
+                index.remove_note(&m.id)
             } else {
-                index.index_note(m, note.body.as_str())?;
+                index.index_note(m, note.body.as_str())
+            };
+            if let Err(e) = result {
+                Self::log_index_failure(&m.id, e);
             }
         }
         Ok(())

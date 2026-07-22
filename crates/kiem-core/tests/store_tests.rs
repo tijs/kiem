@@ -608,3 +608,55 @@ fn bulk_error_or_panic_rolls_back_and_leaves_the_store_usable() {
     let meta = store.create_note("# Survivor", DID).unwrap();
     assert_eq!(store.search("survivor", 10).unwrap()[0].note_id, meta.id);
 }
+
+#[test]
+fn delete_note_succeeds_even_when_the_search_index_write_fails() {
+    use kiem_core::search::SearchIndex;
+
+    // Hold the tantivy writer lock from a separate process-like instance for
+    // comfortably longer than NoteStore's retry budget (~2s, 40 retries x
+    // 50ms — see search::WRITER_LOCK_RETRIES/WRITER_LOCK_BACKOFF; 4s gives
+    // headroom over scheduler jitter so the budget reliably exhausts),
+    // simulating exactly what happened in practice: a CLI command and the
+    // GUI app's sync ticker both writing to the same on-disk index at once.
+    let dir = tempfile::tempdir().unwrap();
+    let search_dir = dir.path().join("search");
+    let mut store = NoteStore::open_dir(dir.path()).unwrap();
+    let id = store.create_note("# Contended", DID).unwrap().id;
+
+    let contender_dir = search_dir.clone();
+    let contender = std::thread::spawn(move || {
+        let mut idx = SearchIndex::open_in_dir(&contender_dir).unwrap();
+        idx.index_note_deferred(
+            &kiem_core::note::NoteMetadata {
+                id: "holder".into(),
+                title: "Holder".into(),
+                tags: vec![],
+                author_did: DID.into(),
+                note_type: "note".into(),
+                pinned: false,
+                deleted: false,
+                created_at: "2026-06-10T10:00:00Z".into(),
+                modified_at: "2026-06-10T10:00:00Z".into(),
+                status: None,
+            },
+            "# Holder",
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(4000));
+        idx.flush().unwrap();
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // The actual regression: this must return Ok — the note data change is
+    // durable in SQLite regardless of the search index being contended —
+    // not bubble the index's transient LockBusy up as a hard failure.
+    let result = store.delete_note(&id);
+    assert!(
+        result.is_ok(),
+        "delete must succeed even if the search index update is contended: {result:?}"
+    );
+    assert!(store.get_note(&id).unwrap().unwrap().metadata.deleted);
+
+    contender.join().unwrap();
+}
