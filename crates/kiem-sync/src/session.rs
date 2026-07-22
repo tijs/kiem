@@ -157,14 +157,43 @@ async fn sync_round(
     let peer = peer_id.to_string();
     let frames = {
         let (store, engine) = &mut *state.lock().unwrap();
+        // One problematic document (corrupt bytes, a protocol edge case)
+        // must never take the whole round down with it — `ticker_loop`
+        // returns for good on any `Err` from here, permanently breaking
+        // sync with this peer over a single doc. Log and skip instead; a
+        // doc that keeps failing just keeps getting logged and retried,
+        // every other doc still syncs normally.
+        let doc_ids = engine.doc_ids(store).unwrap_or_else(|e| {
+            eprintln!("kiem sync: doc_ids failed, skipping this round: {e}");
+            Vec::new()
+        });
         let mut frames = Vec::new();
-        for doc_id in engine.doc_ids(store)? {
-            if let Some(payload) = engine.generate_message(store, &peer, &doc_id)? {
-                frames.push((doc_id, payload));
+        for doc_id in doc_ids {
+            match engine.generate_message(store, &peer, &doc_id) {
+                Ok(Some(payload)) => frames.push((doc_id, payload)),
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("kiem sync: generate_message failed for {doc_id}, skipping: {e}");
+                }
             }
+        }
+        // Commits whatever `receive_message` deferred since the last tick
+        // (see `NoteStore::put_doc_deferred`) — bounds search staleness to
+        // about one tick instead of paying a full index commit per document
+        // received during a sync burst. Best-effort: a search-index hiccup
+        // (e.g. transient writer-lock contention with a concurrent CLI
+        // command) must never kill the ticker the way a real connection
+        // error should — `ticker_loop` returns for good on any `Err` here,
+        // and notes still sync correctly either way (the index is a derived,
+        // rebuildable structure, not sync-critical). Just retry next tick.
+        if let Err(e) = store.flush_search_index() {
+            eprintln!("kiem sync: search index flush failed, will retry next tick: {e}");
         }
         frames
     };
+    if frames.is_empty() {
+        return Ok(());
+    }
     let mut send = send.lock().await;
     for (doc_id, payload) in frames {
         write_frame(&mut send, &doc_id, &payload).await?;
@@ -188,10 +217,24 @@ async fn reader_loop(
             (handshake.on_name)(peer_id, name);
             continue;
         }
+        // A single malformed/unexpected document must not tear down the
+        // whole connection — that's what `?` here would do (the caller
+        // aborts the ticker and forgets the peer on any `Err`). Log and
+        // move on to the next frame; every other document still syncs.
         let reply = {
             let (store, engine) = &mut *state.lock().unwrap();
-            engine.receive_message(store, &peer, &doc_id, &payload)?;
-            engine.generate_message(store, &peer, &doc_id)?
+            if let Err(e) = engine.receive_message(store, &peer, &doc_id, &payload) {
+                eprintln!("kiem sync: receive_message failed for {doc_id}, skipping: {e}");
+                None
+            } else {
+                match engine.generate_message(store, &peer, &doc_id) {
+                    Ok(reply) => reply,
+                    Err(e) => {
+                        eprintln!("kiem sync: generate_message (reply) failed for {doc_id}, skipping: {e}");
+                        None
+                    }
+                }
+            }
         };
         if let Some(reply_payload) = reply {
             let mut send = send.lock().await;

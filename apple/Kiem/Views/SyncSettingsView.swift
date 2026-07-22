@@ -12,6 +12,10 @@ struct SyncSettingsView: View {
     @State private var pastedTicket = ""
     @State private var editingDeviceName = ""
     @State private var isEditingDeviceName = false
+    /// Ticked every second so `peerRow` re-renders and `isSyncing` relaxes to
+    /// "Connected" once `syncingTimeout` has passed — nothing else about the
+    /// peer state changes purely from time passing.
+    @State private var now = Date()
 
     private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     /// How long a peer stays in the "syncing" state after the last activity.
@@ -51,7 +55,8 @@ struct SyncSettingsView: View {
         }
         .onAppear { model.armPairingWindow() }
         .onDisappear { model.closePairingWindow() }
-        .onReceive(tick) { _ in
+        .onReceive(tick) { date in
+            now = date
             if mode == .show { model.refreshPairingWindow() }
         }
     }
@@ -132,7 +137,7 @@ struct SyncSettingsView: View {
 
     private func isSyncing(peerId: String) -> Bool {
         guard let last = model.lastSyncActivity[peerId] else { return false }
-        return Date().timeIntervalSince(last) < Self.syncingTimeout
+        return now.timeIntervalSince(last) < Self.syncingTimeout
     }
 
     // MARK: Show this Mac

@@ -40,6 +40,16 @@ pub struct SyncEngine {
     states: HashMap<(String, String), State>,
     /// Documents received from peers that do not hydrate to a note yet.
     pending: HashMap<String, AutoCommit>,
+    /// doc_id → (last-seen stored bytes, the `AutoCommit` parsed from them).
+    /// `generate_message` runs once per doc per peer per tick regardless of
+    /// whether anything changed, so on a store with hundreds of documents
+    /// almost every call would otherwise reparse an unchanged document from
+    /// scratch (`AutoCommit::load`, the expensive part) — this cache skips
+    /// that when the freshly-fetched bytes still match what's cached.
+    /// Comparing against freshly-fetched bytes on every call (rather than
+    /// trusting the cache blindly) is what keeps this safe against writes
+    /// that land outside `SyncEngine` (e.g. a local edit via the CLI/app).
+    loaded: HashMap<String, (Vec<u8>, AutoCommit)>,
 }
 
 impl SyncEngine {
@@ -82,7 +92,18 @@ impl SyncEngine {
         let message = if let Some(doc) = self.pending.get_mut(doc_id) {
             doc.sync().generate_sync_message(state)
         } else if let Some(bytes) = stored_bytes {
-            load_doc(doc_id, &bytes)?
+            let stale = match self.loaded.get(doc_id) {
+                Some((cached_bytes, _)) => cached_bytes != &bytes,
+                None => true,
+            };
+            if stale {
+                let doc = load_doc(doc_id, &bytes)?;
+                self.loaded.insert(doc_id.to_owned(), (bytes, doc));
+            }
+            self.loaded
+                .get_mut(doc_id)
+                .expect("just inserted or already cached above")
+                .1
                 .sync()
                 .generate_sync_message(state)
         } else if doc_id == TOMBSTONES_DOC_ID {
@@ -120,7 +141,15 @@ impl SyncEngine {
         let mut doc = match self.pending.remove(doc_id) {
             Some(doc) => doc,
             None => match stored_bytes {
-                Some(bytes) => load_doc(doc_id, &bytes)?,
+                // Reuse the cached parse when it's still current (the doc
+                // hasn't changed since); the entry is removed either way —
+                // this doc is about to be mutated, so any cached copy is
+                // stale the moment we're done regardless of which branch we
+                // took (see the `loaded` field doc comment).
+                Some(bytes) => match self.loaded.remove(doc_id) {
+                    Some((cached_bytes, doc)) if cached_bytes == bytes => doc,
+                    _ => load_doc(doc_id, &bytes)?,
+                },
                 None => AutoCommit::new(),
             },
         };
@@ -137,7 +166,10 @@ impl SyncEngine {
             // it persists the merged doc and erases the listed notes locally.
             store.adopt_tombstone_doc(&mut doc)?;
         } else if hydrate::<_, NoteDoc>(&doc).is_ok() {
-            store.put_doc(&mut doc)?;
+            // Deferred: a sync burst can apply many documents back to back;
+            // the transport layer flushes the search index once per tick
+            // (`flush_search_index`) rather than paying a commit per note.
+            store.put_doc_deferred(&mut doc)?;
         } else {
             self.pending.insert(doc_id.to_owned(), doc);
         }
@@ -203,12 +235,17 @@ mod tests {
     }
 
     /// Exchange messages in both directions until neither side has anything
-    /// to say. Returns the number of messages that crossed the wire.
+    /// to say. Returns the number of messages that crossed the wire. Flushes
+    /// both sides' deferred search-index writes on convergence, mirroring
+    /// what the real transport's per-tick `flush_search_index` call does in
+    /// production (see session.rs's `sync_round`).
     fn converge(a: &mut Peer, b: &mut Peer) -> usize {
         let mut total = 0;
         loop {
             let round = pump(a, b) + pump(b, a);
             if round == 0 {
+                a.store.flush_search_index().unwrap();
+                b.store.flush_search_index().unwrap();
                 return total;
             }
             total += round;
@@ -362,5 +399,81 @@ mod tests {
             .body
             .as_str()
             .contains("after restart"));
+    }
+
+    /// Like `converge`, but bails out after `max_rounds` instead of looping
+    /// forever — a livelock should fail the test, not hang the suite.
+    fn converge_bounded(a: &mut Peer, b: &mut Peer, max_rounds: usize) -> Option<usize> {
+        let mut total = 0;
+        for _ in 0..max_rounds {
+            let round = pump(a, b) + pump(b, a);
+            if round == 0 {
+                a.store.flush_search_index().unwrap();
+                b.store.flush_search_index().unwrap();
+                return Some(total);
+            }
+            total += round;
+        }
+        None
+    }
+
+    /// Reproduces a livelock reported live (finding baf2d005): two peers with
+    /// ~600 already-converged notes both restart near-simultaneously — unlike
+    /// `interrupted_sync_resumes_with_fresh_state`, which only resets *one*
+    /// side, here *both* engines reset at once, so both sides need a fresh
+    /// per-doc handshake simultaneously. Live symptom: continuous non-empty
+    /// sync activity forever with zero notes ever actually crossing.
+    #[test]
+    fn both_peers_restarting_simultaneously_still_converges() {
+        let (mut a, mut b) = (peer("a"), peer("b"));
+        for i in 0..600 {
+            a.store
+                .insert_note(&NoteDoc::new_with(
+                    format!("shared-{i}"),
+                    &format!("# Note {i}"),
+                    "did:a",
+                    TS.into(),
+                ))
+                .unwrap();
+        }
+        converge_bounded(&mut a, &mut b, 10_000).expect("initial convergence of 600 notes");
+        assert_eq!(b.store.list_notes().unwrap().len(), 600);
+
+        // Both peers "restart" at once: both engines reset, unlike the
+        // single-sided reset in interrupted_sync_resumes_with_fresh_state.
+        a.engine = SyncEngine::new();
+        b.engine = SyncEngine::new();
+
+        a.store
+            .insert_note(&NoteDoc::new_with(
+                "new-from-a".into(),
+                "# New from A",
+                "did:a",
+                TS.into(),
+            ))
+            .unwrap();
+        b.store
+            .insert_note(&NoteDoc::new_with(
+                "new-from-b".into(),
+                "# New from B",
+                "did:b",
+                TS.into(),
+            ))
+            .unwrap();
+
+        let result = converge_bounded(&mut a, &mut b, 10_000);
+        assert!(
+            result.is_some(),
+            "did not converge within 10,000 rounds after a simultaneous double restart"
+        );
+
+        assert!(
+            a.store.get_note("new-from-b").unwrap().is_some(),
+            "A never got B's new note"
+        );
+        assert!(
+            b.store.get_note("new-from-a").unwrap().is_some(),
+            "B never got A's new note"
+        );
     }
 }

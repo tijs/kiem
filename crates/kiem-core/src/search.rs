@@ -49,9 +49,20 @@ pub struct SearchIndex {
     index: Index,
     reader: IndexReader,
     fields: Fields,
+    /// An open, not-yet-committed writer from `*_deferred` calls (sync
+    /// receiving a burst of documents). `None` when nothing is pending.
+    pending_writer: Option<IndexWriter>,
+    /// Writes applied to `pending_writer` since it was last committed.
+    pending_count: usize,
 }
 
 const WRITER_HEAP_BYTES: usize = 15_000_000;
+/// Auto-flush a deferred batch after this many writes, rather than only on
+/// the caller's next explicit `flush`. The writer lock is exclusive across
+/// processes (a CLI command needs it too — see `writer()`'s retry/backoff);
+/// during a long sync burst, holding it open for a whole tick interval
+/// starves those retries, so this caps how long any single hold can last.
+const DEFERRED_FLUSH_BATCH: usize = 25;
 /// tantivy's writer lock is exclusive per process; a daemon and a one-shot
 /// CLI command can collide briefly, so writer acquisition retries.
 const WRITER_LOCK_RETRIES: u32 = 40;
@@ -97,6 +108,8 @@ impl SearchIndex {
             index,
             reader,
             fields,
+            pending_writer: None,
+            pending_count: 0,
         })
     }
 
@@ -113,6 +126,58 @@ impl SearchIndex {
         let writer = self.writer()?;
         writer.delete_term(Term::from_field_text(self.fields.note_id, id));
         self.commit(writer)
+    }
+
+    /// Like `index_note`, but leaves the write uncommitted — for a caller
+    /// applying many documents in a burst (sync receiving a bulk resync)
+    /// that will call `flush` itself once, instead of paying a full
+    /// open-writer + commit + reader-reload per document. The write is
+    /// invisible to search until `flush` runs.
+    pub fn index_note_deferred(&mut self, meta: &NoteMetadata, body: &str) -> Result<(), SearchError> {
+        let term = Term::from_field_text(self.fields.note_id, &meta.id);
+        let doc = self.make_doc(meta, body);
+        let writer = self.pending_writer()?;
+        writer.delete_term(term);
+        writer.add_document(doc)?;
+        self.note_pending_write()
+    }
+
+    /// Deferred counterpart to `remove_note` — see `index_note_deferred`.
+    pub fn remove_note_deferred(&mut self, id: &str) -> Result<(), SearchError> {
+        let term = Term::from_field_text(self.fields.note_id, id);
+        let writer = self.pending_writer()?;
+        writer.delete_term(term);
+        self.note_pending_write()
+    }
+
+    /// Commits and releases whatever `*_deferred` calls have accumulated.
+    /// A cheap no-op when nothing is pending. Note content itself is never
+    /// at risk from a missed flush — the index is fully rebuildable from
+    /// SQLite (see the module doc) — a missed flush just means search lags
+    /// until the next one.
+    pub fn flush(&mut self) -> Result<(), SearchError> {
+        self.pending_count = 0;
+        match self.pending_writer.take() {
+            Some(writer) => self.commit(writer),
+            None => Ok(()),
+        }
+    }
+
+    /// Counts one more write into the open pending batch and auto-flushes
+    /// at `DEFERRED_FLUSH_BATCH` — see that constant's doc comment for why.
+    fn note_pending_write(&mut self) -> Result<(), SearchError> {
+        self.pending_count += 1;
+        if self.pending_count >= DEFERRED_FLUSH_BATCH {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn pending_writer(&mut self) -> Result<&mut IndexWriter, SearchError> {
+        if self.pending_writer.is_none() {
+            self.pending_writer = Some(self.writer()?);
+        }
+        Ok(self.pending_writer.as_mut().expect("just ensured Some"))
     }
 
     /// Replace the entire index contents (recovery path; the store re-feeds
@@ -192,6 +257,16 @@ impl SearchIndex {
         writer.commit()?;
         self.reader.reload()?;
         Ok(())
+    }
+}
+
+impl Drop for SearchIndex {
+    /// Best-effort: commit a pending deferred batch on graceful shutdown
+    /// rather than leaving search stale until the next unrelated write.
+    /// Nothing is lost if this doesn't run (process kill, panic) — the
+    /// index is fully rebuildable from SQLite regardless.
+    fn drop(&mut self) {
+        let _ = self.flush();
     }
 }
 
@@ -292,5 +367,42 @@ mod tests {
         }
         let idx = SearchIndex::open_in_dir(dir.path()).unwrap();
         assert_eq!(idx.search("zebra", 10).unwrap()[0].note_id, "n1");
+    }
+
+    /// Regression: `index_note_deferred` used to hold the writer open for
+    /// an entire batch with no bound; a large enough sync burst could hold
+    /// it long enough that a concurrent caller (the CLI, opening its own
+    /// `SearchIndex` on the same on-disk directory) never won the lock
+    /// within its retry budget (live symptom: "Failed to acquire Lockfile:
+    /// LockBusy" from a `kiem note add` run during a real sync burst).
+    /// Auto-flushing every `DEFERRED_FLUSH_BATCH` writes bounds any single
+    /// hold, so a concurrent immediate write must still succeed.
+    #[test]
+    fn a_concurrent_writer_can_still_get_the_lock_during_a_deferred_burst() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_path_buf();
+
+        let burst = std::thread::spawn(move || {
+            let mut idx = SearchIndex::open_in_dir(&dir_path).unwrap();
+            for i in 0..(DEFERRED_FLUSH_BATCH * 4) {
+                idx.index_note_deferred(&meta(&format!("burst-{i}"), "# Burst"), "# Burst")
+                    .unwrap();
+            }
+            idx.flush().unwrap();
+        });
+
+        // Give the burst a moment to actually start holding the writer.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        let mut concurrent = SearchIndex::open_in_dir(dir.path()).unwrap();
+        let result =
+            concurrent.index_note(&meta("interactive", "# Interactive"), "# Interactive");
+        assert!(
+            result.is_ok(),
+            "a concurrent immediate write should still acquire the lock within its retry \
+             budget instead of starving behind a long-held deferred batch: {result:?}"
+        );
+
+        burst.join().unwrap();
     }
 }

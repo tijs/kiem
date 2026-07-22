@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed: syncing after both peers restart around the same time could take minutes instead of seconds on a store with hundreds of notes. Every note received during a sync burst was committing the search index individually (a real disk flush + reader reload each time); it now batches those commits once per sync tick instead of once per note.
+- Fixed: a single hiccup during sync (e.g. a transient local error unrelated to the connection) could permanently stop syncing with that peer until the app restarted. Sync now logs and continues past a non-connection error instead of tearing down the session.
+- Fixed: a fully caught-up peer in the Sync settings pane could get stuck showing "Syncing" forever. The periodic sync ticker was reporting activity on every round even when it had nothing to send; it now only reports activity when data actually goes out, and the pane re-checks the status every second so it settles back to "Connected" a couple seconds after the last real exchange.
 - Fixed: long peer ids in the Sync settings no longer overflow the fixed-width window. The pane now scrolls vertically, the settings window can be resized wider, and ids are truncated in the middle with the full value available on hover.
 
 ## 0.1.0 - 2026-07-19

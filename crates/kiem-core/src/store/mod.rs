@@ -497,6 +497,21 @@ impl NoteStore {
     /// receive). Inserts or fully replaces the row from the document's own
     /// hydrated state and keeps the search index in step.
     pub fn put_doc(&mut self, doc: &mut AutoCommit) -> Result<NoteMetadata, StoreError> {
+        self.put_doc_impl(doc, false)
+    }
+
+    /// Like `put_doc`, but defers the search-index write instead of
+    /// committing it immediately — for a caller applying many documents in
+    /// a burst (sync receiving a bulk resync), which would otherwise pay a
+    /// full tantivy commit+reload per document. The caller must eventually
+    /// call `flush_search_index` (the sync ticker does this once per tick);
+    /// until then the note is persisted and syncs correctly, it just isn't
+    /// searchable yet.
+    pub fn put_doc_deferred(&mut self, doc: &mut AutoCommit) -> Result<NoteMetadata, StoreError> {
+        self.put_doc_impl(doc, true)
+    }
+
+    fn put_doc_impl(&mut self, doc: &mut AutoCommit, defer_index: bool) -> Result<NoteMetadata, StoreError> {
         let note: NoteDoc = hydrate(doc).map_err(|e| document_err("(sync)", e))?;
         let m = &note.metadata;
         // A purged id was permanently erased (Empty Trash): a peer that still
@@ -529,13 +544,23 @@ impl NoteStore {
             ],
         )?;
         if let Some(index) = &mut self.search {
-            if m.deleted {
-                index.remove_note(&m.id)?;
-            } else {
-                index.index_note(m, note.body.as_str())?;
+            match (m.deleted, defer_index) {
+                (true, true) => index.remove_note_deferred(&m.id)?,
+                (true, false) => index.remove_note(&m.id)?,
+                (false, true) => index.index_note_deferred(m, note.body.as_str())?,
+                (false, false) => index.index_note(m, note.body.as_str())?,
             }
         }
         Ok(note.metadata)
+    }
+
+    /// Commits any search-index writes deferred by `put_doc_deferred`. A
+    /// cheap no-op when nothing is pending.
+    pub fn flush_search_index(&mut self) -> Result<(), StoreError> {
+        if let Some(index) = &mut self.search {
+            index.flush()?;
+        }
+        Ok(())
     }
 
     /// Toggle one checkbox at `index` within note `id` and persist.
