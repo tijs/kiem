@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 - 2026-07-22
+
+- Fixed: `kiem` could refuse to start at all — `NoteStore::open_dir` failing with "Operation not supported on socket" — the first time a new version opened a data dir where a sync daemon's `control.sock` was still on disk (e.g. after the daemon was killed rather than exiting cleanly). The one-time backup taken on a version upgrade copied every file in the data dir including that socket, and `fs::copy` can't copy a socket. Non-regular files (sockets, FIFOs) are now skipped in that backup instead of failing it.
+
 ## 0.2.1 - 2026-07-22
 
 - Fixed: creating, editing, deleting, or restoring a note could fail with a "Something went wrong" search-index error even though the change had already saved successfully — most likely with a `kiem` CLI command and the app running against the same data dir at once. The search index is a derived, rebuildable structure; a transient index-update failure is now logged and skipped instead of failing the whole operation.
