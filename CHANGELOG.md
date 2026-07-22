@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 - 2026-07-22
 
+- Added: `scripts/sync-agent/` packages `kiem sync` as a per-user launchd LaunchAgent, for running sync unattended on a headless Mac (no GUI app open, no one logged in interactively — just auto-login). `install.sh` sets it up and guards against installing alongside a running GUI app; `uninstall.sh` reverses it. See `scripts/sync-agent/README.md`.
+- Fixed: the CLI and the app could both bind a P2P mesh to the same device identity at once (e.g. the GUI app open while `kiem sync` or `kiem pair` also runs) — two accept/dial loops on one identity corrupted peer discovery. Starting a mesh now takes an exclusive lock for the data dir, so a second attempt fails clearly instead of silently colliding.
 - Fixed: syncing after both peers restart around the same time could take minutes instead of seconds on a store with hundreds of notes. Every note received during a sync burst was committing the search index individually (a real disk flush + reader reload each time); it now batches those commits once per sync tick instead of once per note.
 - Fixed: a single hiccup during sync (e.g. a transient local error unrelated to the connection) could permanently stop syncing with that peer until the app restarted. Sync now logs and continues past a non-connection error instead of tearing down the session.
 - Fixed: a fully caught-up peer in the Sync settings pane could get stuck showing "Syncing" forever. The periodic sync ticker was reporting activity on every round even when it had nothing to send; it now only reports activity when data actually goes out, and the pane re-checks the status every second so it settles back to "Connected" a couple seconds after the last real exchange.
