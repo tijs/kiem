@@ -5,6 +5,7 @@
 //! their own accept/dial loop around [`session::run`].
 
 use std::collections::HashSet;
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,6 +18,8 @@ use crate::session::{self, PeerHandshake, SessionError, SharedState};
 use crate::{endpoint, identity, Endpoint, EndpointAddr, EndpointId, IdentityError};
 
 pub const PEERS_FILE: &str = "known-peers";
+/// Advisory-locked for the life of a running `Mesh` — see `acquire_lock`.
+const LOCK_FILE: &str = "mesh.lock";
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(thiserror::Error, Debug)]
@@ -27,6 +30,42 @@ pub enum MeshError {
     Endpoint(#[from] crate::EndpointError),
     #[error(transparent)]
     Peers(#[from] PeersError),
+    /// Another process (CLI daemon or app) already holds the mesh lock for
+    /// this data dir — two accept/dial loops on one identity corrupt
+    /// discovery, so only one may run at a time.
+    #[error("another kiem process is already syncing {data_dir}")]
+    AlreadyRunning { data_dir: String },
+    #[error("locking {path}: {source}")]
+    Lock { path: String, source: std::io::Error },
+}
+
+/// Exclusively locks `<data_dir>/mesh.lock` for the caller's lifetime — the
+/// file handle must be kept alive (e.g. on `Mesh`) for the lock to hold;
+/// dropping it releases the lock automatically. Guards the one hazard
+/// `Mesh::start`'s callers share: the CLI daemon and the app's FFI bridge
+/// both bind a mesh to the same on-disk identity, and running two at once
+/// means two accept/dial loops advertising the same `EndpointId`.
+fn acquire_lock(data_dir: &Path) -> Result<File, MeshError> {
+    let path = data_dir.join(LOCK_FILE);
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|source| MeshError::Lock {
+            path: path.display().to_string(),
+            source,
+        })?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(MeshError::AlreadyRunning {
+            data_dir: data_dir.display().to_string(),
+        }),
+        Err(TryLockError::Error(source)) => Err(MeshError::Lock {
+            path: path.display().to_string(),
+            source,
+        }),
+    }
 }
 
 /// Notified as peers connect/disconnect. Default no-ops so a caller that only
@@ -55,6 +94,9 @@ pub struct NoEvents;
 impl MeshEvents for NoEvents {}
 
 pub struct Mesh {
+    /// Held for the life of the mesh; never read, only kept alive so its
+    /// `Drop` releases the lock (see `acquire_lock`).
+    _lock: File,
     endpoint: Endpoint,
     data_dir: PathBuf,
     state: SharedState,
@@ -81,10 +123,12 @@ impl Mesh {
         interval: Duration,
         events: Arc<dyn MeshEvents>,
     ) -> Result<Arc<Mesh>, MeshError> {
+        let lock = acquire_lock(&data_dir)?;
         let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
         let endpoint = endpoint::bind(secret_key).await?;
 
         let mesh = Arc::new(Mesh {
+            _lock: lock,
             endpoint,
             data_dir,
             state,
@@ -434,5 +478,19 @@ mod tests {
         let mut expired = Some(now - Duration::from_secs(1));
         assert!(!window_open(&mut expired, now));
         assert!(expired.is_none(), "an expired window must be cleared");
+    }
+
+    #[test]
+    fn acquire_lock_refuses_a_second_holder_until_the_first_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let first = acquire_lock(dir.path()).expect("first lock should succeed");
+        match acquire_lock(dir.path()) {
+            Err(MeshError::AlreadyRunning { .. }) => {}
+            other => panic!("expected AlreadyRunning while first lock is held, got {other:?}"),
+        }
+
+        drop(first);
+        acquire_lock(dir.path()).expect("lock should be free again after the holder drops");
     }
 }
