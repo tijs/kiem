@@ -53,10 +53,20 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let dst_path = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             copy_dir_all(&entry.path(), &dst_path)?;
-        } else {
+        } else if file_type.is_file() {
             std::fs::copy(entry.path(), &dst_path)?;
+        } else {
+            // The sync daemon's control.sock (or any other special file:
+            // FIFO, symlink) holds no data worth backing up, and fs::copy
+            // fails on it outright (ENOTSUP on a socket) — skip rather than
+            // fail the whole backup over an ephemeral IPC fixture.
+            eprintln!(
+                "kiem: skipping non-regular file in data-dir backup: {}",
+                entry.path().display()
+            );
         }
     }
     Ok(())
@@ -127,5 +137,26 @@ mod tests {
         check_and_backup(&data_dir).unwrap(); // second open, same version
 
         assert!(!has_backup_entry(root.path()));
+    }
+
+    /// Regression: a live `kiem sync` daemon leaves a Unix domain socket
+    /// (`control.sock`) in the data dir. `fs::copy` can't copy a socket
+    /// (ENOTSUP) — this used to take down the whole backup, and therefore
+    /// every `NoteStore::open_dir` call, on the first launch of any new
+    /// version while the daemon's socket was still on disk.
+    #[test]
+    fn backing_up_a_data_dir_containing_a_unix_socket_does_not_fail() {
+        let (_root, data_dir) = isolated_data_dir();
+        std::fs::write(data_dir.join(MARKER_FILE), "0.0.1-previous").unwrap();
+        std::fs::write(data_dir.join("kiem.db"), b"pretend-database").unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(data_dir.join("control.sock")).unwrap();
+
+        check_and_backup(&data_dir).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(data_dir.join(MARKER_FILE)).unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
     }
 }
