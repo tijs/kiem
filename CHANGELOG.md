@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - 2026-07-22
+
+- Fixed: creating, editing, deleting, or restoring a note could fail with a "Something went wrong" search-index error even though the change had already saved successfully — most likely with a `kiem` CLI command and the app running against the same data dir at once. The search index is a derived, rebuildable structure; a transient index-update failure is now logged and skipped instead of failing the whole operation.
+
 ## 0.2.0 - 2026-07-22
 
 - Added: `scripts/sync-agent/` packages `kiem sync` as a per-user launchd LaunchAgent, for running sync unattended on a headless Mac (no GUI app open, no one logged in interactively — just auto-login). `install.sh` sets it up and guards against installing alongside a running GUI app; `uninstall.sh` reverses it. See `scripts/sync-agent/README.md`.
