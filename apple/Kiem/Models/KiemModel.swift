@@ -91,8 +91,7 @@ final class KiemModel {
         // A pending debounce edit to a note that's about to be purged would
         // otherwise flush against a gone id (spurious error alert).
         flushPendingEdit()
-        report { try store.purgeDeleted() }
-        refresh()
+        perform { try $0.purgeDeleted() } then: { _ in self.refresh() }
     }
 
     /// The project tag a "Delete Project…" asked to purge; drives the shared
@@ -103,11 +102,12 @@ final class KiemModel {
     /// ones included), with the same sync-safe tombstoning as Empty Trash.
     func deleteProject(tag: String) {
         flushPendingEdit()
-        report { try store.purgeTag(tag: tag) }
-        if selection == .project(tag) {
-            selection = .allNotes
+        perform { try $0.purgeTag(tag: tag) } then: { _ in
+            if self.selection == .project(tag) {
+                self.selection = .allNotes // didSet refreshes the notes
+            }
+            self.refresh()
         }
-        refresh()
     }
 
     /// Empty-list heading for the current selection.
@@ -178,7 +178,7 @@ final class KiemModel {
         terminateObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.flushPendingEdit() }
+            MainActor.assumeIsolated { self?.flushPendingEditBlocking() }
         }
     }
 
@@ -368,15 +368,17 @@ final class KiemModel {
     /// not clobber the incoming change. Active typing is left alone: the pending
     /// edit will merge with the external change on flush.
     private func reloadEditorIfExternalWriteChangedIt() {
-        guard let id = selectedNoteID,
-              pendingEditTask == nil,
-              let note = report({ try store.getNote(id: id) }) ?? nil
-        else { return }
-        if note.body != editorText {
+        guard let id = selectedNoteID, pendingEditTask == nil, loadingNoteID == nil else { return }
+        perform { try $0.getNote(id: id) } then: { note in
+            // Re-check: the user may have switched notes or resumed typing while
+            // the read was queued.
+            guard let note, self.selectedNoteID == id, self.pendingEditTask == nil,
+                  self.loadingNoteID == nil, note.body != self.editorText
+            else { return }
             // The pending edit (if any) targets the stale body; drop it.
-            pendingEdit = nil
-            loadedBody = note.body
-            editorText = note.body
+            self.pendingEdit = nil
+            self.loadedBody = note.body
+            self.editorText = note.body
         }
     }
 
@@ -395,23 +397,36 @@ final class KiemModel {
         refreshSidebar()
     }
 
-    func refreshNotes() {
-        let listed: [NoteMetadata]? = searchText.isEmpty
-            ? report { try notes(for: selection) }
-            : report { try searchResults(matching: searchText) }
-        // A failed query (listed == nil) leaves notes + selection untouched —
-        // clearing on a transient DB error (e.g. SQLITE_BUSY racing a sync write)
-        // blanks the editor even though the note is intact in the store.
-        guard let listed else { return }
-        notes = listed
-        // Prune selected notes that left the current view (trashed, filtered
-        // out, edited elsewhere) — for a single selection this also clears
-        // the editor via the selection didSet.
-        let visible = Set(listed.map(\.id))
-        if !selectedNoteIDs.isSubset(of: visible) {
-            selectedNoteIDs.formIntersection(visible)
+    /// Reload the note list for the current selection/search. `completion` runs
+    /// on the main actor once the new list is applied — the hook for actions
+    /// that must select a note the refresh has to know about first.
+    func refreshNotes(then completion: (@Sendable @MainActor () -> Void)? = nil) {
+        // Captured, not read again in the completion: the selection may have
+        // moved on while the query was queued, and applying a list built for
+        // the old one would show the wrong notes.
+        let selection = self.selection
+        let query = searchText
+        // A failed query leaves notes + selection untouched — clearing on a
+        // transient DB error (e.g. SQLITE_BUSY racing a sync write) blanks the
+        // editor even though the note is intact in the store. `perform` skips
+        // `apply` on failure, so that falls out for free.
+        perform { store in
+            query.isEmpty
+                ? try Self.notes(for: selection, in: store)
+                : try Self.searchResults(matching: query, in: store)
+        } then: { listed in
+            guard self.selection == selection, self.searchText == query else { return }
+            self.notes = listed
+            // Prune selected notes that left the current view (trashed, filtered
+            // out, edited elsewhere) — for a single selection this also clears
+            // the editor via the selection didSet.
+            let visible = Set(listed.map(\.id))
+            if !self.selectedNoteIDs.isSubset(of: visible) {
+                self.selectedNoteIDs.formIntersection(visible)
+            }
+            self.refreshOpenTodos()
+            completion?()
         }
-        refreshOpenTodos()
     }
 
     /// Load (or clear) the open todos for the current view: the selected
@@ -423,9 +438,9 @@ final class KiemModel {
         }
         switch selection {
         case let .project(tag):
-            openTodos = report { try store.listTodoItemsForTag(tag: tag) } ?? []
+            perform { try $0.listTodoItemsForTag(tag: tag) } then: { self.openTodos = $0 }
         case .filter(.todo):
-            openTodos = report { try store.listOpenTodoItems() } ?? []
+            perform { try $0.listOpenTodoItems() } then: { self.openTodos = $0 }
         default:
             openTodos = []
         }
@@ -435,27 +450,30 @@ final class KiemModel {
     func toggleProjectTodo(noteID: String, index: UInt32, checked: Bool) {
         // A pending body edit to the same note would clobber the toggle.
         flushPendingEdit()
-        report { try store.setTodoChecked(noteId: noteID, index: index, checked: checked) }
-        refresh()
-        // If the toggled note is open in the editor, re-sync its text. Otherwise
-        // the editor keeps the pre-toggle body and the next keystroke writes it
-        // back, silently reverting the checkbox. loadSelectedNote sets loadedBody
-        // before editorText, so the change it triggers sees them equal and skips.
-        if noteID == selectedNoteID { loadSelectedNote() }
+        perform { try $0.setTodoChecked(noteId: noteID, index: index, checked: checked) } then: { _ in
+            self.refresh()
+            // If the toggled note is open in the editor, re-sync its text. Otherwise
+            // the editor keeps the pre-toggle body and the next keystroke writes it
+            // back, silently reverting the checkbox.
+            if noteID == self.selectedNoteID { self.loadSelectedNote() }
+        }
     }
 
     /// Rename a project todo by its (note, index) address and refresh.
     /// Same clobber guards as `toggleProjectTodo` (see comments there).
     func updateProjectTodoText(noteID: String, index: UInt32, text: String) {
         flushPendingEdit()
-        report { try store.setTodoText(noteId: noteID, index: index, text: text) }
-        refresh()
-        if noteID == selectedNoteID { loadSelectedNote() }
+        perform { try $0.setTodoText(noteId: noteID, index: index, text: text) } then: { _ in
+            self.refresh()
+            if noteID == self.selectedNoteID { self.loadSelectedNote() }
+        }
     }
 
     /// Full-text search via the Rust core, mapped back to list metadata with
     /// rank order preserved. Trashed hits drop out — they're not in `listNotes`.
-    private func searchResults(matching query: String) throws -> [NoteMetadata] {
+    nonisolated private static func searchResults(
+        matching query: String, in store: KiemStore
+    ) throws -> [NoteMetadata] {
         let hits = try store.search(query: query, limit: 50)
         let byID = try Dictionary(uniqueKeysWithValues: store.listNotes().map { ($0.id, $0) })
         return hits.compactMap { byID[$0.noteId] }
@@ -463,7 +481,9 @@ final class KiemModel {
 
     /// The note list backing a sidebar selection. Each case maps to a dedicated
     /// `KiemStore` query; the filtering itself lives in the Rust core.
-    private func notes(for selection: SidebarSelection) throws -> [NoteMetadata] {
+    nonisolated private static func notes(
+        for selection: SidebarSelection, in store: KiemStore
+    ) throws -> [NoteMetadata] {
         switch selection {
         case .allNotes: try store.listNotes()
         case let .tag(tag): try store.listByTag(tag: tag)
@@ -477,17 +497,19 @@ final class KiemModel {
     }
 
     /// Refresh the sidebar's tag list, project list, and smart-filter counts.
+    /// One store call for both, so the counts can't disagree with the tags.
     private func refreshSidebar() {
-        let allTags = report { try store.getTags() } ?? []
-        projects = allTags.filter { $0.tag.hasPrefix(Self.projectTagPrefix) }
-        tags = allTags.filter { !$0.tag.hasPrefix(Self.projectTagPrefix) }
-        if let counts = report({ try store.filterCounts() }) {
-            filterCounts = [
-                .todo: Int(counts.todo),
-                .today: Int(counts.today),
-                .untagged: Int(counts.untagged),
-                .pinned: Int(counts.pinned),
-                .trash: Int(counts.trash),
+        perform { store in
+            try (tags: store.getTags(), counts: store.filterCounts())
+        } then: { result in
+            self.projects = result.tags.filter { $0.tag.hasPrefix(Self.projectTagPrefix) }
+            self.tags = result.tags.filter { !$0.tag.hasPrefix(Self.projectTagPrefix) }
+            self.filterCounts = [
+                .todo: Int(result.counts.todo),
+                .today: Int(result.counts.today),
+                .untagged: Int(result.counts.untagged),
+                .pinned: Int(result.counts.pinned),
+                .trash: Int(result.counts.trash),
             ]
         }
     }
@@ -501,9 +523,11 @@ final class KiemModel {
             errorMessage = "Couldn’t make a project name from “\(name)”. Use letters or numbers."
             return
         }
-        report { try store.createNote(body: "# \(name)\n\nProject home.\n\n#\(tag)", authorDid: authorDid) }
-        refresh()
-        selection = .project(tag)
+        let body = "# \(name)\n\nProject home.\n\n#\(tag)"
+        perform { [authorDid] in try $0.createNote(body: body, authorDid: authorDid) } then: { _ in
+            self.refreshSidebar()
+            self.selection = .project(tag) // didSet refreshes the notes
+        }
     }
 
     // MARK: Import / export (File menu)
@@ -557,7 +581,7 @@ final class KiemModel {
         })
     }
 
-    /// One transfer at a time: run `work` on a background task (it holds the
+    /// One transfer at a time: run `work` on the store queue (it holds the
     /// store+sync lock — sync rounds stall until it finishes, by design),
     /// stream progress into `activeTransfer`, then refresh and report the
     /// summary or error back on the main actor.
@@ -567,9 +591,8 @@ final class KiemModel {
         summary: @escaping @Sendable (TransferSummary) -> String
     ) {
         guard activeTransfer == nil else { return }
-        // The transfer holds the store lock for its whole run; a debounced
-        // edit flushing on the main actor mid-transfer would block the UI on
-        // that lock. Flush now, while the lock is still free — the modal
+        // The transfer holds the store lock for its whole run. Flushing first
+        // puts the pending write ahead of it on the store queue — the modal
         // progress sheet prevents new edits until the transfer ends.
         flushPendingEdit()
         activeTransfer = TransferActivity(verb: verb)
@@ -584,22 +607,24 @@ final class KiemModel {
                 self?.activeTransfer = transfer
             }
         }
-        Task.detached {
+        storeQueue.async {
             let result = Result { try work(relay) }
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                switch result {
-                case let .success(transferred):
-                    self.refresh()
-                    self.pendingTransferOutcome = (summary(transferred), isError: false)
-                case let .failure(error):
-                    self.pendingTransferOutcome = ("\(error)", isError: true)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    switch result {
+                    case let .success(transferred):
+                        self.refresh()
+                        self.pendingTransferOutcome = (summary(transferred), isError: false)
+                    case let .failure(error):
+                        self.pendingTransferOutcome = ("\(error)", isError: true)
+                    }
+                    // Dropping activeTransfer dismisses the progress sheet; the
+                    // outcome alert waits for the sheet's onDismiss — presenting
+                    // it while the sheet is still tearing down can silently drop
+                    // it on macOS.
+                    self.activeTransfer = nil
                 }
-                // Dropping activeTransfer dismisses the progress sheet; the
-                // outcome alert waits for the sheet's onDismiss — presenting
-                // it while the sheet is still tearing down can silently drop
-                // it on macOS.
-                self.activeTransfer = nil
             }
         }
     }
@@ -659,24 +684,27 @@ final class KiemModel {
     }
 
     func createNote() {
-        guard let meta = report({
-            try store.createNote(body: "# ", authorDid: authorDid)
-        }) else { return }
-        refresh()
-        selectedNoteID = meta.id
+        perform { [authorDid] in try $0.createNote(body: "# ", authorDid: authorDid) } then: { meta in
+            self.refreshSidebar()
+            // Select only once the list holds the new note — refreshNotes prunes
+            // selections it can't see.
+            self.refreshNotes { self.selectedNoteID = meta.id }
+        }
     }
 
     /// Open a note from a `kiem://note/<id>` reference. Trashed notes land in
     /// Trash so the user sees the deleted state; live notes land in All Notes.
     /// Unknown ids surface an error without changing the current selection.
     func openNote(id: String) {
-        guard let note = report({ try store.getNote(id: id) }) ?? nil else {
-            errorMessage = "No note found for that reference."
-            return
+        perform { try $0.getNote(id: id) } then: { note in
+            guard let note else {
+                self.errorMessage = "No note found for that reference."
+                return
+            }
+            self.selection = note.metadata.deleted ? .filter(.trash) : .allNotes
+            self.refreshSidebar()
+            self.refreshNotes { self.selectedNoteID = id }
         }
-        selection = note.metadata.deleted ? .filter(.trash) : .allNotes
-        refresh()
-        selectedNoteID = id
     }
 
     // MARK: Bulk actions (multi-select context menu + drag to sidebar)
@@ -695,30 +723,31 @@ final class KiemModel {
         } else {
             replacementID = nil
         }
-        for id in ids {
-            report { try store.deleteNote(id: id) }
-        }
-        selectedNoteIDs.subtract(ids)
-        refresh()
-        if let replacementID, notes.contains(where: { $0.id == replacementID }) {
-            selectedNoteID = replacementID
+        perform { store in
+            for id in ids { _ = try store.deleteNote(id: id) }
+        } then: { _ in
+            self.selectedNoteIDs.subtract(ids)
+            self.refreshSidebar()
+            self.refreshNotes {
+                if let replacementID, self.notes.contains(where: { $0.id == replacementID }) {
+                    self.selectedNoteID = replacementID
+                }
+            }
         }
     }
 
     /// Restore trashed notes (undo "Move to Trash").
     func restoreNotes(_ ids: Set<String>) {
-        for id in ids {
-            report { try store.restoreNote(id: id) }
-        }
-        refresh()
+        perform { store in
+            for id in ids { _ = try store.restoreNote(id: id) }
+        } then: { _ in self.refresh() }
     }
 
     /// Pin or unpin notes.
     func setPinned(_ ids: Set<String>, pinned: Bool) {
-        for id in ids {
-            report { try store.setPinned(id: id, pinned: pinned) }
-        }
-        refresh()
+        perform { store in
+            for id in ids { _ = try store.setPinned(id: id, pinned: pinned) }
+        } then: { _ in self.refresh() }
     }
 
     /// Add a hashtag to notes — both "tag it" (plain tag) and "add to
@@ -728,19 +757,20 @@ final class KiemModel {
     func addTag(_ ids: Set<String>, tag: String) {
         // A pending edit flushed later would overwrite the tagged body.
         flushPendingEdit()
-        for id in ids {
-            report { try store.addTag(id: id, tag: tag) }
-        }
-        refresh()
-        if let selected = selectedNoteID, ids.contains(selected) {
-            loadSelectedNote()
+        perform { store in
+            for id in ids { _ = try store.addTag(id: id, tag: tag) }
+        } then: { _ in
+            self.refresh()
+            if let selected = self.selectedNoteID, ids.contains(selected) {
+                self.loadSelectedNote()
+            }
         }
     }
 
     /// Editor change → schedule a debounced store write (Rust re-derives
     /// title/tags at flush time, then metadata refreshes).
     func editorTextDidChange() {
-        guard let id = selectedNoteID else { return }
+        guard let id = selectedNoteID, loadingNoteID == nil else { return }
         // Loading a note assigns `editorText` programmatically, which also fires
         // this handler. Skip when nothing actually changed: otherwise every
         // note-open re-derives + persists metadata (bumping modified_at and, with
@@ -756,43 +786,103 @@ final class KiemModel {
         }
     }
 
-    /// Persist the pending edit now (if any) and refresh derived state.
-    private func flushPendingEdit() {
+    /// Take the pending edit, if any, and stop its debounce timer.
+    private func takePendingEdit() -> (noteID: String, text: String)? {
         pendingEditTask?.cancel()
         pendingEditTask = nil
-        guard let (id, text) = pendingEdit else { return }
+        guard let edit = pendingEdit else { return nil }
         pendingEdit = nil
-        if id == selectedNoteID { loadedBody = text }
-        report { try store.updateNote(id: id, body: text) }
-        refreshNotes()
-        refreshSidebar()
+        if edit.noteID == selectedNoteID { loadedBody = edit.text }
+        return edit
     }
+
+    /// Queue the pending edit's write (if any) and refresh derived state. The
+    /// write is *enqueued* synchronously, so anything queued after it — a tag
+    /// add, a delete, the next note's load — still lands after it.
+    private func flushPendingEdit() {
+        guard let (id, text) = takePendingEdit() else { return }
+        perform { try $0.updateNote(id: id, body: text) } then: { _ in
+            self.refreshNotes()
+            self.refreshSidebar()
+        }
+    }
+
+    /// Persist the pending edit *before returning*. Only for app termination,
+    /// where an enqueued write would die with the process. Blocks the main
+    /// thread by design — at quit that's a beat, not a beachball.
+    private func flushPendingEditBlocking() {
+        guard let (id, text) = takePendingEdit() else { return }
+        let store = self.store
+        storeQueue.sync { try? store.updateNote(id: id, body: text) }
+    }
+
+    /// The note whose body is being fetched, or nil when the editor is settled.
+    /// The load is async now, so it gates two things it used to get for free by
+    /// blocking: a stale fetch must not overwrite a newer one, and keystrokes
+    /// typed into the not-yet-filled editor must not be written back as the
+    /// note's body.
+    private var loadingNoteID: String?
 
     private func loadSelectedNote() {
         // Selection already points at the new note; this persists the
         // previous note's still-pending text before its editor state goes away.
         flushPendingEdit()
-        guard let id = selectedNoteID,
-              let note = report({ try store.getNote(id: id) }) ?? nil
-        else {
-            loadedBody = ""
-            editorText = ""
+        // Blank the editor for the duration of the fetch rather than leaving the
+        // previous note's text under the new note's id. Setting `loadedBody`
+        // first keeps the change handler the assignment triggers a no-op.
+        loadedBody = ""
+        editorText = ""
+        guard let id = selectedNoteID else {
+            loadingNoteID = nil
             return
         }
-        // Set `loadedBody` before `editorText` so the change handler the
-        // assignment triggers sees them equal and skips the write.
-        loadedBody = note.body
-        editorText = note.body
+        loadingNoteID = id
+        // On failure the editor stays blank, but must not stay uneditable —
+        // a stuck `loadingNoteID` would swallow every keystroke silently.
+        perform { try $0.getNote(id: id) } onFailure: {
+            self.loadingNoteID = nil
+        } then: { note in
+            // A newer load (or a cleared selection) supersedes this one.
+            guard self.loadingNoteID == id else { return }
+            self.loadingNoteID = nil
+            guard let note else { return }
+            self.loadedBody = note.body
+            self.editorText = note.body
+        }
     }
 
-    /// Run a store call, surfacing failures in the UI instead of crashing.
-    @discardableResult
-    private func report<T>(_ work: () throws -> T) -> T? {
-        do {
-            return try work()
-        } catch {
-            errorMessage = "\(error)"
-            return nil
+    /// Serial queue for every FFI call. The Rust core serializes store access
+    /// behind one mutex, and the sync tick can hold it for seconds on a large
+    /// store — so calling it from `@MainActor` beachballs the app. Work goes
+    /// here; results are applied back on the main actor. Both queues are FIFO,
+    /// so calls land — and their results apply — in issue order, the same
+    /// strict ordering the old synchronous calls had (Swift actors give no
+    /// such guarantee).
+    private let storeQueue = DispatchQueue(label: "org.kiem.store")
+
+    /// Run a store call off the main thread, then apply its result on the main
+    /// actor. Failures surface in the UI instead of crashing, and skip `apply`
+    /// so state is never overwritten from a call that didn't land — pass
+    /// `onFailure` where skipping would leave state wedged rather than stale.
+    private func perform<T: Sendable>(
+        _ work: @escaping @Sendable (KiemStore) throws -> T,
+        onFailure: (@Sendable @MainActor () -> Void)? = nil,
+        then apply: @escaping @Sendable @MainActor (T) -> Void = { _ in }
+    ) {
+        let store = self.store
+        storeQueue.async {
+            let result = Result { try work(store) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    switch result {
+                    case let .success(value):
+                        apply(value)
+                    case let .failure(error):
+                        self.errorMessage = "\(error)"
+                        onFailure?()
+                    }
+                }
+            }
         }
     }
 }
