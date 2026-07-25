@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: the app could freeze for seconds during ordinary note actions — adding a tag, deleting, pinning, creating a note — on a store with hundreds of notes and sync running. Every call into the core ran on the main thread and waited on the same lock the background sync round holds for its whole tick, so anything landing mid-tick blocked the whole UI. Those calls now run off the main thread, and the window stays responsive while they complete. The underlying per-tick cost is unchanged, so a slow action can still take a moment — it just no longer freezes the app while it does.
+- Added: `KIEM_SYNC_TRACE=1` makes `kiem sync` print per-round sync diagnostics to stderr (documents offered, frames sent and received, time spent waiting on the store lock versus working). Off by default, and intended for diagnosing a stalled sync against a large store.
+
 ## 0.2.2 - 2026-07-22
 
 - Fixed: `kiem` could refuse to start at all — `NoteStore::open_dir` failing with "Operation not supported on socket" — the first time a new version opened a data dir where a sync daemon's `control.sock` was still on disk (e.g. after the daemon was killed rather than exiting cleanly). The one-time backup taken on a version upgrade copied every file in the data dir including that socket, and `fs::copy` can't copy a socket. Non-regular files (sockets, FIFOs) are now skipped in that backup instead of failing it.
