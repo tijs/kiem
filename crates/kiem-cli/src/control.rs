@@ -264,11 +264,10 @@ async fn wait_for_pairing(
 mod tests {
     use super::*;
     use kiem_core::store::NoteStore;
-    use kiem_core::sync::SyncEngine;
 
     async fn start_daemon_side(dir: &Path) -> (Arc<Mesh>, Arc<ControlEvents>) {
         let store = NoteStore::open_dir(dir).unwrap();
-        let state = Arc::new(Mutex::new((store, SyncEngine::new())));
+        let state = kiem_sync::shared_state(store);
         let events = Arc::new(ControlEvents::default());
         let mesh = Mesh::start(
             dir.to_owned(),

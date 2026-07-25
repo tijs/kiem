@@ -8,16 +8,12 @@ use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
 use kiem_core::store::NoteStore;
-use kiem_core::sync::SyncEngine;
 use kiem_sync::SharedState;
 
 const TS: &str = "2026-01-01T00:00:00Z";
 
 fn empty_state() -> SharedState {
-    Arc::new(Mutex::new((
-        NoteStore::open_in_memory_with_search().unwrap(),
-        SyncEngine::new(),
-    )))
+    kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
 }
 
 /// Aborts a spawned task when dropped, so a live iroh session (and its UDP
@@ -42,7 +38,6 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
         let b_state = empty_state();
         a_state
             .lock()
-            .unwrap()
             .0
             .insert_note(&NoteDoc::new_with(
                 "n1".into(),
@@ -99,7 +94,7 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
 
         let mut synced = false;
         for _ in 0..200 {
-            if b_state.lock().unwrap().0.get_note("n1").unwrap().is_some() {
+            if b_state.lock().0.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -146,7 +141,6 @@ async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
         let b_state = empty_state();
         a_state
             .lock()
-            .unwrap()
             .0
             .insert_note(&NoteDoc::new_with(
                 "n1".into(),
@@ -195,7 +189,7 @@ async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
 
         let mut synced = false;
         for _ in 0..200 {
-            if b_state.lock().unwrap().0.get_note("n1").unwrap().is_some() {
+            if b_state.lock().0.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }

@@ -10,8 +10,10 @@
 //! connection handshake, so — unlike the TCP version — there's no need for a
 //! hello frame to identify who's on the other end.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use iroh::endpoint::{
     Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError,
@@ -72,7 +74,21 @@ pub enum SessionError {
 
 /// Shared, lockable note store + sync engine — the same pairing
 /// `kiem-cli`'s daemon holds today, just behind an `Arc` for async tasks.
+///
+/// `parking_lot::Mutex`, not `std::sync::Mutex`, and that choice is
+/// load-bearing: macOS's std mutex is unfair, and during a receive burst the
+/// reader loop re-locks per frame in a tight loop — a ticker blocked on the
+/// same lock was measured starving for 69 seconds. parking_lot's eventual
+/// fairness hands the lock to a waiter that's been parked ~1ms, bounding
+/// starvation. It also doesn't poison, so a panicked sync task can't brick
+/// every later store call from the app/CLI.
 pub type SharedState = Arc<Mutex<(NoteStore, SyncEngine)>>;
+
+/// The one way to build a [`SharedState`] — keeps the fair-mutex choice in
+/// this crate instead of leaking `parking_lot` into every consumer.
+pub fn shared_state(store: NoteStore) -> SharedState {
+    Arc::new(Mutex::new((store, SyncEngine::new())))
+}
 
 /// Runs one peer session until the connection closes. `dialed` picks which
 /// side opens the bidirectional stream (mirrors QUIC's client/server roles;
@@ -124,7 +140,7 @@ pub async fn run(
 
     let result = reader_loop(&mut recv, &state, peer_id, &send, &handshake).await;
 
-    state.lock().unwrap().1.forget_peer(&peer);
+    state.lock().1.forget_peer(&peer);
     ticker.abort();
     result
 }
@@ -177,7 +193,7 @@ async fn sync_round(
         // Timed separately: waiting here means another thread (a UI/CLI call,
         // or this connection's reader) held the store, which is a different
         // problem from the round itself being slow.
-        let mut guard = state.lock().unwrap();
+        let mut guard = state.lock();
         let waited = started.elapsed();
         let (store, engine) = &mut *guard;
         // One problematic document (corrupt bytes, a protocol edge case)
@@ -309,7 +325,7 @@ async fn reader_loop(
         let apply_started = Instant::now();
         let mut silent_kind = 0u8; // 0 = stored/converged, 1 = no doc, 2 = pending
         let reply = {
-            let (store, engine) = &mut *state.lock().unwrap();
+            let (store, engine) = &mut *state.lock();
             if let Err(e) = engine.receive_message(store, &peer, &doc_id, &payload) {
                 eprintln!("kiem sync: receive_message failed for {doc_id}, skipping: {e}");
                 None

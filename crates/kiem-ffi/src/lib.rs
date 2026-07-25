@@ -84,7 +84,7 @@ impl KiemStore {
         &self,
         f: impl FnOnce(&mut NoteStore, &mut SyncEngine) -> Result<T, KiemError>,
     ) -> Result<T, KiemError> {
-        let mut guard = self.state.lock().expect("KiemStore lock poisoned");
+        let mut guard = self.state.lock();
         let (store, engine) = &mut *guard;
         f(store, engine)
     }
@@ -99,7 +99,7 @@ impl KiemStore {
         let store = NoteStore::open_dir(&data_dir)?;
         Ok(KiemStore {
             data_dir,
-            state: Arc::new(Mutex::new((store, SyncEngine::new()))),
+            state: kiem_sync::shared_state(store),
             sync: Mutex::new(None),
         })
     }

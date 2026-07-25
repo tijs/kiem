@@ -2344,6 +2344,7 @@ dependencies = [
  "iroh",
  "iroh-tickets",
  "kiem-core",
+ "parking_lot",
  "serde",
  "serde_json",
  "tempfile",

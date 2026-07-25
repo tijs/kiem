@@ -6,12 +6,11 @@
 //! heartbeat for `kiem sync-status`, and stderr logging.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use kiem_core::store::NoteStore;
-use kiem_core::sync::SyncEngine;
 use kiem_sync::Mesh;
 use serde_json::json;
 
@@ -33,7 +32,7 @@ pub fn run(opts: Options) -> Result<()> {
 async fn run_async(opts: Options) -> Result<()> {
     let store = NoteStore::open_dir(&opts.data_dir)
         .with_context(|| format!("opening data directory {}", opts.data_dir.display()))?;
-    let state = Arc::new(Mutex::new((store, SyncEngine::new())));
+    let state = kiem_sync::shared_state(store);
 
     // Bind the control socket before the endpoint: it doubles as the
     // single-instance lock (two meshes on one identity corrupt discovery).

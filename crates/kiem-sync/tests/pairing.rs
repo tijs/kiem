@@ -3,12 +3,11 @@
 //! `loopback.rs`, this binds real UDP sockets — a timeout here means "no local
 //! networking in this sandbox", not a protocol bug.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
 use kiem_core::store::NoteStore;
-use kiem_core::sync::SyncEngine;
 use kiem_sync::{EndpointId, KnownPeers, Mesh, MeshEvents, NoEvents, SharedState, PEERS_FILE};
 
 const TS: &str = "2026-01-01T00:00:00Z";
@@ -23,17 +22,13 @@ impl MeshEvents for ApproveAll {
 }
 
 fn empty_state() -> SharedState {
-    Arc::new(Mutex::new((
-        NoteStore::open_in_memory_with_search().unwrap(),
-        SyncEngine::new(),
-    )))
+    kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
 }
 
 fn state_with_note() -> SharedState {
     let state = empty_state();
     state
         .lock()
-        .unwrap()
         .0
         .insert_note(&NoteDoc::new_with(
             "n1".into(),
@@ -85,7 +80,7 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
 
         let mut synced = false;
         for _ in 0..300 {
-            if state_b.lock().unwrap().0.get_note("n1").unwrap().is_some() {
+            if state_b.lock().0.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -229,7 +224,7 @@ async fn unknown_peer_is_refused_when_no_window_is_open() {
             "B trusted an unknown peer with no pairing window"
         );
         assert!(
-            state_b.lock().unwrap().0.get_note("n1").unwrap().is_none(),
+            state_b.lock().0.get_note("n1").unwrap().is_none(),
             "a note synced to B despite the pairing being refused"
         );
     })

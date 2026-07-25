@@ -8,7 +8,7 @@
 //! network-isolated sandbox means "no local networking", not a protocol bug.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
@@ -32,10 +32,7 @@ impl<T> Drop for AbortOnDrop<T> {
 }
 
 fn empty_state() -> SharedState {
-    Arc::new(Mutex::new((
-        NoteStore::open_in_memory_with_search().unwrap(),
-        SyncEngine::new(),
-    )))
+    kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
 }
 
 fn handshake(ticket: String, name: &str, activity: Arc<AtomicUsize>) -> kiem_sync::PeerHandshake {
@@ -58,7 +55,6 @@ fn handshake(ticket: String, name: &str, activity: Arc<AtomicUsize>) -> kiem_syn
 fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
     for i in 0..SHARED_DOCS {
         a.lock()
-            .unwrap()
             .0
             .insert_note(&NoteDoc::new_with(
                 format!("shared-{i:04}"),
@@ -75,26 +71,26 @@ fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
     for _ in 0..10 {
         let mut quiet = true;
         let ids = {
-            let store = &a.lock().unwrap().0;
+            let store = &a.lock().0;
             ea.doc_ids(store).unwrap()
         };
         for id in &ids {
             let msg = {
-                let store = &a.lock().unwrap().0;
+                let store = &a.lock().0;
                 ea.generate_message(store, "b", id).unwrap()
             };
             if let Some(msg) = msg {
                 quiet = false;
-                let (store, _) = &mut *b.lock().unwrap();
+                let (store, _) = &mut *b.lock();
                 eb.receive_message(store, "a", id, &msg).unwrap();
             }
             let reply = {
-                let store = &b.lock().unwrap().0;
+                let store = &b.lock().0;
                 eb.generate_message(store, "a", id).unwrap()
             };
             if let Some(reply) = reply {
                 quiet = false;
-                let (store, _) = &mut *a.lock().unwrap();
+                let (store, _) = &mut *a.lock();
                 ea.receive_message(store, "b", id, &reply).unwrap();
             }
         }
@@ -102,9 +98,9 @@ fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
             break;
         }
     }
-    b.lock().unwrap().0.flush_search_index().unwrap();
+    b.lock().0.flush_search_index().unwrap();
     assert_eq!(
-        b.lock().unwrap().0.list_all_ids().unwrap().len(),
+        b.lock().0.list_all_ids().unwrap().len(),
         SHARED_DOCS,
         "seeding did not converge the two stores"
     );
@@ -124,7 +120,6 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
         // The post-restart edit on each side: one note the peer has never seen.
         a_state
             .lock()
-            .unwrap()
             .0
             .insert_note(&NoteDoc::new_with(
                 "only-on-a".into(),
@@ -135,7 +130,6 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
             .unwrap();
         b_state
             .lock()
-            .unwrap()
             .0
             .insert_note(&NoteDoc::new_with(
                 "only-on-b".into(),
@@ -183,14 +177,12 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
         for _ in 0..400 {
             let a_has_b = a_state
                 .lock()
-                .unwrap()
                 .0
                 .get_note("only-on-b")
                 .unwrap()
                 .is_some();
             let b_has_a = b_state
                 .lock()
-                .unwrap()
                 .0
                 .get_note("only-on-a")
                 .unwrap()
@@ -249,7 +241,6 @@ async fn both_peers_pushing_a_large_backlog_at_once_still_converge() {
             for i in 0..EACH {
                 state
                     .lock()
-                    .unwrap()
                     .0
                     .insert_note(&NoteDoc::new_with(
                         format!("{side}-{i:04}"),
@@ -287,8 +278,8 @@ async fn both_peers_pushing_a_large_backlog_at_once_still_converge() {
         let mut last = (0, 0);
         let mut converged = false;
         for _ in 0..300 {
-            let a_count = a_state.lock().unwrap().0.list_all_ids().unwrap().len();
-            let b_count = b_state.lock().unwrap().0.list_all_ids().unwrap().len();
+            let a_count = a_state.lock().0.list_all_ids().unwrap().len();
+            let b_count = b_state.lock().0.list_all_ids().unwrap().len();
             if (a_count, b_count) != last {
                 eprintln!(
                     "{:?} a={a_count} b={b_count} activity={}",

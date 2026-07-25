@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use kiem_core::store::NoteStore;
-use kiem_core::sync::SyncEngine;
 use kiem_sync::{EndpointId, KnownPeers, Mesh, MeshEvents, PEERS_FILE};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader, Lines};
@@ -197,7 +196,7 @@ async fn add_transient(data_dir: &Path, ticket: &str, as_json: bool) -> Result<(
 async fn start_mesh(data_dir: &Path, events: Arc<TerminalEvents>) -> Result<Arc<Mesh>> {
     let store = NoteStore::open_dir(data_dir)
         .with_context(|| format!("opening data directory {}", data_dir.display()))?;
-    let state = Arc::new(Mutex::new((store, SyncEngine::new())));
+    let state = kiem_sync::shared_state(store);
     Ok(Mesh::start(data_dir.to_owned(), state, Duration::from_secs(1), events).await?)
 }
 

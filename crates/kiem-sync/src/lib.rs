@@ -18,4 +18,4 @@ pub use names::{
     device_name, peer_name, set_device_name, set_peer_name, DEVICE_NAME_FILE, PEER_NAMES_FILE,
 };
 pub use peers::{my_ticket, parse_ticket, KnownPeers, PeersError};
-pub use session::{run as run_session, PeerHandshake, SessionError, SharedState};
+pub use session::{run as run_session, shared_state, PeerHandshake, SessionError, SharedState};
