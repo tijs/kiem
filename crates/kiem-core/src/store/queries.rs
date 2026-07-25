@@ -68,6 +68,21 @@ impl NoteStore {
             .optional()?)
     }
 
+    /// Just the `modified_at` stamp for one note — no BLOB read. The sync
+    /// engine polls this every tick to decide whether a doc changed; every
+    /// store write path bumps `modified_at`, so an unchanged stamp means
+    /// unchanged doc bytes.
+    pub fn get_modified_at(&self, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT modified_at FROM notes WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
     /// Load and hydrate the full note document. `None` if the id is unknown.
     pub fn get_note(&self, id: &str) -> Result<Option<NoteDoc>, StoreError> {
         match self.load_doc(id)? {

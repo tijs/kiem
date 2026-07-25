@@ -45,11 +45,20 @@ pub struct SyncEngine {
     /// whether anything changed, so on a store with hundreds of documents
     /// almost every call would otherwise reparse an unchanged document from
     /// scratch (`AutoCommit::load`, the expensive part) — this cache skips
-    /// that when the freshly-fetched bytes still match what's cached.
-    /// Comparing against freshly-fetched bytes on every call (rather than
-    /// trusting the cache blindly) is what keeps this safe against writes
-    /// that land outside `SyncEngine` (e.g. a local edit via the CLI/app).
+    /// that. Staleness is decided by `stamps` (see below); the bytes kept
+    /// here back the byte-compare `receive_message` still does on its
+    /// fetched copy.
     loaded: HashMap<String, (Vec<u8>, AutoCommit)>,
+    /// doc_id → the SQLite `modified_at` stamp observed when `loaded`'s
+    /// parse for that doc was cached. Every store write path bumps
+    /// `modified_at`, so `generate_message` can skip the per-doc BLOB
+    /// `SELECT` entirely (the dominant cost of an idle tick over hundreds
+    /// of docs) when the cheap stamp read still matches — including writes
+    /// that land outside `SyncEngine` (a local edit via the CLI/app).
+    stamps: HashMap<String, String>,
+    /// Test seam: how many note-BLOB fetches `generate_message` has done.
+    #[cfg(test)]
+    note_blob_fetches: usize,
 }
 
 impl SyncEngine {
@@ -84,9 +93,29 @@ impl SyncEngine {
             .states
             .entry((peer.to_owned(), doc_id.to_owned()))
             .or_default();
+        // Cheap staleness pre-check for regular docs: an unchanged
+        // `modified_at` stamp proves the stored bytes are unchanged, so the
+        // cached parse can be synced from directly — no BLOB `SELECT`.
+        let fresh_stamp = if doc_id == TOMBSTONES_DOC_ID || self.pending.contains_key(doc_id) {
+            None
+        } else {
+            store.get_modified_at(doc_id)?
+        };
+        if let Some(stamp) = &fresh_stamp {
+            if self.stamps.get(doc_id) == Some(stamp) {
+                if let Some((_, doc)) = self.loaded.get_mut(doc_id) {
+                    let message = doc.sync().generate_sync_message(state);
+                    return Ok(message.map(|m| m.encode()));
+                }
+            }
+        }
         let stored_bytes = if doc_id == TOMBSTONES_DOC_ID {
             store.tombstone_doc_bytes()?
         } else {
+            #[cfg(test)]
+            {
+                self.note_blob_fetches += 1;
+            }
             store.get_doc_bytes(doc_id)?
         };
         let message = if let Some(doc) = self.pending.get_mut(doc_id) {
@@ -99,6 +128,9 @@ impl SyncEngine {
             if stale {
                 let doc = load_doc(doc_id, &bytes)?;
                 self.loaded.insert(doc_id.to_owned(), (bytes, doc));
+            }
+            if let Some(stamp) = fresh_stamp {
+                self.stamps.insert(doc_id.to_owned(), stamp);
             }
             self.loaded
                 .get_mut(doc_id)
@@ -358,6 +390,67 @@ mod tests {
         // already-in-sync handshake message per direction per doc.
         let second = converge(&mut a, &mut b);
         assert!(second <= 2, "expected near-zero traffic, got {second}");
+    }
+
+    /// One idle "tick": generate (and drop) messages for every doc, as the
+    /// transport's `sync_round` does.
+    fn tick(p: &mut Peer, to: &str) {
+        for id in p.engine.doc_ids(&p.store).unwrap() {
+            p.engine.generate_message(&p.store, to, &id).unwrap();
+        }
+    }
+
+    #[test]
+    fn unchanged_docs_skip_blob_fetches_after_first_tick() {
+        let (mut a, mut b) = (peer("a"), peer("b"));
+        for i in 0..10 {
+            a.store
+                .insert_note(&NoteDoc::new_with(
+                    format!("n{i}"),
+                    &format!("# Note {i}"),
+                    "did:a",
+                    TS.into(),
+                ))
+                .unwrap();
+        }
+        converge(&mut a, &mut b);
+
+        // First idle tick may rebuild caches invalidated by the last
+        // receive; every tick after that must be BLOB-free.
+        tick(&mut a, "b");
+        let after_first = a.engine.note_blob_fetches;
+        for _ in 0..5 {
+            tick(&mut a, "b");
+        }
+        assert_eq!(
+            a.engine.note_blob_fetches, after_first,
+            "idle ticks over unchanged docs must not fetch note BLOBs"
+        );
+    }
+
+    #[test]
+    fn edit_between_ticks_is_picked_up_on_the_next_tick() {
+        let (mut a, mut b) = (peer("a"), peer("b"));
+        a.store
+            .insert_note(&NoteDoc::new_with("n1".into(), "# X", "did:a", TS.into()))
+            .unwrap();
+        converge(&mut a, &mut b);
+        // Prime the watermark so the skip path is active, then write behind
+        // the engine's back the way the CLI/app does.
+        tick(&mut a, "b");
+        tick(&mut a, "b");
+        a.store.update_note("n1", "# X\n\nedited between ticks").unwrap();
+
+        converge(&mut a, &mut b);
+
+        assert!(b
+            .store
+            .get_note("n1")
+            .unwrap()
+            .unwrap()
+            .body
+            .as_str()
+            .contains("edited between ticks"));
     }
 
     #[test]
