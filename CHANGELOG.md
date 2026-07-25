@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-07-25
+
 - Fixed: the app could freeze for seconds during ordinary note actions — adding a tag, deleting, pinning, creating a note — on a store with hundreds of notes and sync running. Every call into the core ran on the main thread and waited on the same lock the background sync round holds for its whole tick, so anything landing mid-tick blocked the whole UI. Those calls now run off the main thread, and the window stays responsive while they complete. The underlying per-tick cost is unchanged, so a slow action can still take a moment — it just no longer freezes the app while it does.
 - Fixed: two paired devices with a large store (hundreds of notes) could sit on "Syncing" indefinitely without anything replicating. Emptying the trash records the purged notes so peers erase them too; adopting that list on the other side removed each note from the search index one at a time, and each removal waited out the full retry budget for a lock that the ongoing sync already held. A few dozen purged notes could hold the store for over a minute, and nothing else — sync included — could get in. Those removals now go through the same batched path the rest of sync uses.
 - Fixed: the lock shared between sync and everything else was unfair on macOS, so the periodic sync round could be starved for over a minute while incoming notes were being applied. It is now a fair lock, which bounds the wait to about a millisecond.
