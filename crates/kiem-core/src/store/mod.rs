@@ -498,10 +498,26 @@ impl NoteStore {
         )?;
         tx.commit()?;
         if let Some(index) = &mut self.search {
+            // Deferred, not immediate: a tombstone doc received mid-sync-burst
+            // runs while this store's own deferred writer is already open, and
+            // an immediate `remove_note` per id would burn the full writer-lock
+            // retry budget (~2s) against our own open writer, per id, inside
+            // the store mutex — 32 purged ids stalled sync for a measured 64+
+            // seconds (finding baf2d005). The deferred call reuses the open
+            // writer for free; the flush below keeps the local Empty Trash
+            // path as immediate as before.
             for id in ids {
-                if let Err(e) = index.remove_note(id) {
+                if let Err(e) = index.remove_note_deferred(id) {
                     Self::log_index_failure(id, e);
+                    // Writer unavailable: skip the rest of the batch instead
+                    // of paying the retry budget per id. The index is derived
+                    // (these entries were already removed at trash time), so
+                    // missing removals cost nothing but staleness.
+                    break;
                 }
+            }
+            if let Err(e) = index.flush() {
+                eprintln!("kiem: search index flush after purge failed, will retry on next write: {e}");
             }
         }
         Ok(erased)

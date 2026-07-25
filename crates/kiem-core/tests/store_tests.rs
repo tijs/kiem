@@ -660,3 +660,44 @@ fn delete_note_succeeds_even_when_the_search_index_write_fails() {
 
     contender.join().unwrap();
 }
+
+#[test]
+fn tombstone_adoption_mid_deferred_burst_does_not_stall_on_the_writer_lock() {
+    use automerge::AutoCommit;
+
+    // Disk-backed store: the tantivy writer lock is only real on disk.
+    let dir = tempfile::tempdir().unwrap();
+    let mut store_b = NoteStore::open_dir(dir.path()).unwrap();
+
+    // A source store supplies the documents: one live note for the "burst",
+    // three purged ids carried by its tombstone doc.
+    let mut store_a = store_with(&[note("burst-1", "# Burst", "2026-06-28T10:00:00Z")]);
+    for id in ["p1", "p2", "p3"] {
+        store_a
+            .insert_note(&note(id, "# Doomed", "2026-06-28T10:00:00Z"))
+            .unwrap();
+        store_a.delete_note(id).unwrap();
+    }
+    assert_eq!(store_a.purge_deleted().unwrap(), 3);
+
+    // Open B's deferred search-index writer, as the sync receive path does
+    // during a document burst.
+    let bytes = store_a.get_doc_bytes("burst-1").unwrap().unwrap();
+    let mut doc = AutoCommit::load(&bytes).unwrap();
+    store_b.put_doc_deferred(&mut doc).unwrap();
+
+    // Adopting a tombstone doc used to do an *immediate* index removal per
+    // purged id, each burning the full ~2s writer-lock retry budget against
+    // the deferred writer opened above (finding baf2d005: 32 purged ids kept
+    // the store mutex held for 64+ seconds, stalling sync). With deferred
+    // removals the adoption reuses the open writer and completes instantly.
+    let tomb = store_a.tombstone_doc_bytes().unwrap().unwrap();
+    let mut tomb = AutoCommit::load(&tomb).unwrap();
+    let started = std::time::Instant::now();
+    store_b.adopt_tombstone_doc(&mut tomb).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(3),
+        "tombstone adoption stalled on the search-index writer lock: {:?}",
+        started.elapsed()
+    );
+}
