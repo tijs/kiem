@@ -176,6 +176,15 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Whether `doc_id` is parked mid-initial-sync (known id, not yet enough
+    /// changes to hydrate a note). Diagnostic only — the transport uses it to
+    /// tell "we have no reply because we're converged" apart from "we have no
+    /// reply and the document is still incomplete", which look identical from
+    /// outside but mean opposite things.
+    pub fn is_pending(&self, doc_id: &str) -> bool {
+        self.pending.contains_key(doc_id)
+    }
+
     /// Drop all sync state for a peer (it reconnects with a fresh handshake).
     pub fn forget_peer(&mut self, peer: &str) {
         self.states.retain(|(p, _), _| p != peer);

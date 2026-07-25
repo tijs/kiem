@@ -10,8 +10,8 @@
 //! connection handshake, so — unlike the TCP version — there's no need for a
 //! hello frame to identify who's on the other end.
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use iroh::endpoint::{
     Connection, ConnectionError, ReadExactError, RecvStream, SendStream, WriteError,
@@ -147,6 +147,22 @@ async fn ticker_loop(
     }
 }
 
+/// `KIEM_SYNC_TRACE=1` prints one line per sync round and per batch of
+/// received frames. Off by default. This exists because a stalled session on
+/// real hardware (high-latency link, hundreds of documents, two peers
+/// restarting at once) is not reproducible over loopback — the numbers have
+/// to come off the machines that stall. Run `KIEM_SYNC_TRACE=1 kiem sync` on
+/// both sides to collect them.
+pub fn trace_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KIEM_SYNC_TRACE").is_ok_and(|v| v != "0"))
+}
+
+/// Short, greppable peer id for trace lines.
+fn short(peer_id: EndpointId) -> String {
+    peer_id.to_string().chars().take(8).collect()
+}
+
 /// One sync round: offer every known document to the peer.
 async fn sync_round(
     state: &SharedState,
@@ -155,8 +171,15 @@ async fn sync_round(
     on_activity: &(dyn Fn(EndpointId) + Send + Sync),
 ) -> Result<(), SessionError> {
     let peer = peer_id.to_string();
+    let started = Instant::now();
+    let doc_count;
     let frames = {
-        let (store, engine) = &mut *state.lock().unwrap();
+        // Timed separately: waiting here means another thread (a UI/CLI call,
+        // or this connection's reader) held the store, which is a different
+        // problem from the round itself being slow.
+        let mut guard = state.lock().unwrap();
+        let waited = started.elapsed();
+        let (store, engine) = &mut *guard;
         // One problematic document (corrupt bytes, a protocol edge case)
         // must never take the whole round down with it — `ticker_loop`
         // returns for good on any `Err` from here, permanently breaking
@@ -167,6 +190,7 @@ async fn sync_round(
             eprintln!("kiem sync: doc_ids failed, skipping this round: {e}");
             Vec::new()
         });
+        doc_count = doc_ids.len();
         let mut frames = Vec::new();
         for doc_id in doc_ids {
             match engine.generate_message(store, &peer, &doc_id) {
@@ -189,14 +213,36 @@ async fn sync_round(
         if let Err(e) = store.flush_search_index() {
             eprintln!("kiem sync: search index flush failed, will retry next tick: {e}");
         }
+        if trace_enabled() {
+            eprintln!(
+                "kiem sync trace: round peer={} docs={doc_count} frames={} bytes={} \
+                 lock_wait={:?} build={:?}",
+                short(peer_id),
+                frames.len(),
+                frames.iter().map(|(_, p)| p.len()).sum::<usize>(),
+                waited,
+                started.elapsed() - waited,
+            );
+        }
         frames
     };
     if frames.is_empty() {
         return Ok(());
     }
+    let frame_count = frames.len();
+    let write_started = Instant::now();
     let mut send = send.lock().await;
+    let send_waited = write_started.elapsed();
     for (doc_id, payload) in frames {
         write_frame(&mut send, &doc_id, &payload).await?;
+    }
+    if trace_enabled() {
+        eprintln!(
+            "kiem sync trace: sent peer={} frames={frame_count} send_lock_wait={send_waited:?} \
+             write={:?}",
+            short(peer_id),
+            write_started.elapsed() - send_waited,
+        );
     }
     on_activity(peer_id);
     Ok(())
@@ -210,8 +256,47 @@ async fn reader_loop(
     handshake: &PeerHandshake,
 ) -> Result<(), SessionError> {
     let peer = peer_id.to_string();
+    // Trace counters: a stalled session looks completely different depending
+    // on whether frames stop arriving, arrive but don't apply, or apply but
+    // produce no reply. Summarised once a second so a busy session doesn't
+    // drown the log.
+    let (mut frames_in, mut replies_out, mut applied_for) = (0u64, 0u64, Duration::ZERO);
+    // A frame that produces no reply is the interesting case: it leaves the
+    // peer's sync state unadvanced, so the peer re-offers the same document
+    // next round. `no_doc` counts the ones where the store held nothing for
+    // that id at all (purged, or never stored) — a different problem from a
+    // genuinely converged document.
+    let (mut silent_no_doc, mut silent_converged, mut silent_pending) = (0u64, 0u64, 0u64);
+    let mut sample_no_doc = String::new();
+    // Distinct documents seen in the reporting window. If this tracks
+    // `frames_in`, the peer is cycling its whole store; if it is far smaller,
+    // a handful of documents are ping-ponging.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut last_report = Instant::now();
     loop {
         let (doc_id, payload) = read_frame(recv).await?;
+        if trace_enabled() {
+            frames_in += 1;
+            seen.insert(doc_id.clone());
+            if last_report.elapsed() >= Duration::from_secs(1) {
+                let mut samples: Vec<&str> = seen.iter().take(3).map(String::as_str).collect();
+                samples.sort_unstable();
+                eprintln!(
+                    "kiem sync trace: recv peer={} frames_in={frames_in} distinct={} \
+                     replies_out={replies_out} silent_no_doc={silent_no_doc} \
+                     silent_converged={silent_converged} silent_pending={silent_pending} \
+                     sample_no_doc={sample_no_doc} \
+                     samples={samples:?} apply_time={applied_for:?}",
+                    short(peer_id),
+                    seen.len(),
+                );
+                last_report = Instant::now();
+                (frames_in, replies_out, applied_for) = (0, 0, Duration::ZERO);
+                (silent_no_doc, silent_converged, silent_pending) = (0, 0, 0);
+                sample_no_doc.clear();
+                seen.clear();
+            }
+        }
         if doc_id == NAME_HELLO {
             let name = String::from_utf8_lossy(&payload).into_owned();
             (handshake.on_name)(peer_id, name);
@@ -221,24 +306,49 @@ async fn reader_loop(
         // whole connection — that's what `?` here would do (the caller
         // aborts the ticker and forgets the peer on any `Err`). Log and
         // move on to the next frame; every other document still syncs.
+        let apply_started = Instant::now();
+        let mut silent_kind = 0u8; // 0 = stored/converged, 1 = no doc, 2 = pending
         let reply = {
             let (store, engine) = &mut *state.lock().unwrap();
             if let Err(e) = engine.receive_message(store, &peer, &doc_id, &payload) {
                 eprintln!("kiem sync: receive_message failed for {doc_id}, skipping: {e}");
                 None
             } else {
-                match engine.generate_message(store, &peer, &doc_id) {
+                let reply = match engine.generate_message(store, &peer, &doc_id) {
                     Ok(reply) => reply,
                     Err(e) => {
                         eprintln!("kiem sync: generate_message (reply) failed for {doc_id}, skipping: {e}");
                         None
                     }
+                };
+                if trace_enabled() && reply.is_none() {
+                    silent_kind = if engine.is_pending(&doc_id) {
+                        2
+                    } else if store.get_doc_bytes(&doc_id).ok().flatten().is_some() {
+                        0
+                    } else {
+                        1
+                    };
                 }
+                reply
             }
         };
+        applied_for += apply_started.elapsed();
         if let Some(reply_payload) = reply {
+            replies_out += 1;
             let mut send = send.lock().await;
             write_frame(&mut send, &doc_id, &reply_payload).await?;
+        } else if trace_enabled() {
+            match silent_kind {
+                2 => silent_pending += 1,
+                0 => silent_converged += 1,
+                _ => {
+                    silent_no_doc += 1;
+                    if sample_no_doc.is_empty() {
+                        sample_no_doc = doc_id.clone();
+                    }
+                }
+            }
         }
         (handshake.on_sync_activity)(peer_id);
     }
