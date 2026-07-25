@@ -61,6 +61,44 @@ pub struct SyncEngine {
     note_blob_fetches: usize,
 }
 
+/// `KIEM_SYNC_TRACE_DOC=<id-prefix>` prints one stderr line per sync-engine
+/// call touching a matching document — the per-document microscope for "why
+/// does this one doc not converge" (finding baf2d005). Off by default;
+/// kiem-sync's `KIEM_SYNC_TRACE` is the round-level view, this is doc-level.
+fn traced(doc_id: &str) -> bool {
+    static FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    FILTER
+        .get_or_init(|| {
+            std::env::var("KIEM_SYNC_TRACE_DOC")
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
+        .as_ref()
+        .is_some_and(|prefix| doc_id.starts_with(prefix.as_str()))
+}
+
+/// Compact shape of a sync message for `traced` output.
+fn message_shape(message: &Message) -> String {
+    format!(
+        "heads={} need={} have={} changes={}",
+        message.heads.len(),
+        message.need.len(),
+        message.have.len(),
+        message.changes.len()
+    )
+}
+
+fn trace_gen(peer: &str, doc_id: &str, branch: &str, message: &Option<Message>) {
+    let out = match message {
+        Some(m) => format!("[{}]", message_shape(m)),
+        None => "none".to_owned(),
+    };
+    eprintln!(
+        "kiem sync doc-trace: gen peer={} doc={doc_id} branch={branch} out={out}",
+        peer.get(..8).unwrap_or(peer)
+    );
+}
+
 impl SyncEngine {
     pub fn new() -> Self {
         Self::default()
@@ -101,10 +139,14 @@ impl SyncEngine {
         } else {
             store.get_modified_at(doc_id)?
         };
+        let branch;
         if let Some(stamp) = &fresh_stamp {
             if self.stamps.get(doc_id) == Some(stamp) {
                 if let Some((_, doc)) = self.loaded.get_mut(doc_id) {
                     let message = doc.sync().generate_sync_message(state);
+                    if traced(doc_id) {
+                        trace_gen(peer, doc_id, "cached-skip", &message);
+                    }
                     return Ok(message.map(|m| m.encode()));
                 }
             }
@@ -119,12 +161,14 @@ impl SyncEngine {
             store.get_doc_bytes(doc_id)?
         };
         let message = if let Some(doc) = self.pending.get_mut(doc_id) {
+            branch = "pending";
             doc.sync().generate_sync_message(state)
         } else if let Some(bytes) = stored_bytes {
             let stale = match self.loaded.get(doc_id) {
                 Some((cached_bytes, _)) => cached_bytes != &bytes,
                 None => true,
             };
+            branch = if stale { "stored-reload" } else { "stored-cached" };
             if stale {
                 let doc = load_doc(doc_id, &bytes)?;
                 self.loaded.insert(doc_id.to_owned(), (bytes, doc));
@@ -139,6 +183,7 @@ impl SyncEngine {
                 .sync()
                 .generate_sync_message(state)
         } else if doc_id == TOMBSTONES_DOC_ID {
+            branch = "tombstone-empty";
             // The tombstone doc syncs even before any purge exists: an empty
             // document still yields an initial handshake message, which
             // guarantees a freshly-paired empty store says *something* first.
@@ -148,10 +193,14 @@ impl SyncEngine {
             // deadlock behind the intermittent "final state: []" test hangs).
             AutoCommit::new().sync().generate_sync_message(state)
         } else {
+            branch = "unknown";
             // Unknown doc: nothing to offer (the peer's message will
             // introduce it through receive_message).
             None
         };
+        if traced(doc_id) {
+            trace_gen(peer, doc_id, branch, &message);
+        }
         Ok(message.map(|m| m.encode()))
     }
 
@@ -165,6 +214,7 @@ impl SyncEngine {
         bytes: &[u8],
     ) -> Result<(), SyncError> {
         let message = Message::decode(bytes).map_err(|e| SyncError::Decode(e.to_string()))?;
+        let in_shape = traced(doc_id).then(|| message_shape(&message));
         let stored_bytes = if doc_id == TOMBSTONES_DOC_ID {
             store.tombstone_doc_bytes()?
         } else {
@@ -193,17 +243,27 @@ impl SyncEngine {
                 message: e.to_string(),
             })?;
 
+        let outcome;
         if doc_id == TOMBSTONES_DOC_ID {
             // The purge set always hydrates (an empty map is valid); adopting
             // it persists the merged doc and erases the listed notes locally.
+            outcome = "tombstone";
             store.adopt_tombstone_doc(&mut doc)?;
         } else if hydrate::<_, NoteDoc>(&doc).is_ok() {
             // Deferred: a sync burst can apply many documents back to back;
             // the transport layer flushes the search index once per tick
             // (`flush_search_index`) rather than paying a commit per note.
+            outcome = "stored";
             store.put_doc_deferred(&mut doc)?;
         } else {
+            outcome = "pending";
             self.pending.insert(doc_id.to_owned(), doc);
+        }
+        if let Some(shape) = in_shape {
+            eprintln!(
+                "kiem sync doc-trace: recv peer={} doc={doc_id} in=[{shape}] outcome={outcome}",
+                peer.get(..8).unwrap_or(peer)
+            );
         }
         Ok(())
     }
