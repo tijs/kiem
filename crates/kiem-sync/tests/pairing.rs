@@ -1,14 +1,19 @@
 //! End-to-end pairing over a real (loopback) iroh mesh: the trust gate, the
 //! approval hook, and the forced pairing dial working together. Like
 //! `loopback.rs`, this binds real UDP sockets — a timeout here means "no local
-//! networking in this sandbox", not a protocol bug.
+//! networking in this sandbox", not a protocol bug. Unlike `loopback.rs` these
+//! go through `Mesh`, so they use the product's real relay/discovery preset;
+//! only the one-time network-stack init is kept off the clock.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
 use kiem_core::store::NoteStore;
 use kiem_sync::{EndpointId, KnownPeers, Mesh, MeshEvents, NoEvents, SharedState, PEERS_FILE};
+
+mod common;
 
 const TS: &str = "2026-01-01T00:00:00Z";
 const INTERVAL: Duration = Duration::from_millis(50);
@@ -18,6 +23,33 @@ struct ApproveAll;
 impl MeshEvents for ApproveAll {
     fn approve_pairing(&self, _peer: EndpointId) -> bool {
         true
+    }
+}
+
+/// Counts the connections a mesh actually established.
+///
+/// The two refusal tests assert *negatives* — nobody trusted, window still
+/// open, no note crossed — which a dial that never lands satisfies just as
+/// well as a dial that lands and is refused. That is precisely how they used
+/// to pass on this machine. Asserting this counter is what makes them say
+/// "refused a real connection" instead of "nothing happened".
+///
+/// The dialing side is the one that counts: `admit_incoming` lets our own
+/// dialed connections through (we only dial peers we already trust), so A
+/// reports connected as soon as the QUIC handshake completes, whether or not
+/// B then refuses us.
+#[derive(Clone, Default)]
+struct CountConnections(Arc<AtomicUsize>);
+
+impl CountConnections {
+    fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+impl MeshEvents for CountConnections {
+    fn on_connected(&self, _peer: EndpointId) {
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -52,11 +84,17 @@ fn knows(data_dir: &std::path::Path, id: &EndpointId) -> bool {
 async fn approved_pairing_syncs_and_records_mutual_trust() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
+    // Bound before the clock starts, and loopback-only: a ticket read from a
+    // mesh bound the product way carries this machine's LAN and Tailscale
+    // addresses, and dialing those hairpins back to the same host times out —
+    // so these tests used to assert about a connection that never formed.
+    let (ep_a, ep_b) = (common::bind_loopback().await, common::bind_loopback().await);
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         let state_a = state_with_note();
         let state_b = empty_state();
 
-        let mesh_b = Mesh::start(
+        let mesh_b = Mesh::start_with_endpoint(
+            ep_b,
             dir_b.path().into(),
             state_b.clone(),
             INTERVAL,
@@ -64,7 +102,8 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
         )
         .await
         .unwrap();
-        let mesh_a = Mesh::start(
+        let mesh_a = Mesh::start_with_endpoint(
+            ep_a,
             dir_a.path().into(),
             state_a.clone(),
             INTERVAL,
@@ -113,12 +152,18 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
 async fn a_denied_pairing_leaves_the_window_open() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
+    // Bound before the clock starts, and loopback-only: a ticket read from a
+    // mesh bound the product way carries this machine's LAN and Tailscale
+    // addresses, and dialing those hairpins back to the same host times out —
+    // so these tests used to assert about a connection that never formed.
+    let (ep_a, ep_b) = (common::bind_loopback().await, common::bind_loopback().await);
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         let state_a = state_with_note();
         let state_b = empty_state();
 
         // B arms a window but denies every prompt (NoEvents = default-deny).
-        let mesh_b = Mesh::start(
+        let mesh_b = Mesh::start_with_endpoint(
+            ep_b,
             dir_b.path().into(),
             state_b.clone(),
             INTERVAL,
@@ -126,11 +171,13 @@ async fn a_denied_pairing_leaves_the_window_open() {
         )
         .await
         .unwrap();
-        let mesh_a = Mesh::start(
+        let a_connections = CountConnections::default();
+        let mesh_a = Mesh::start_with_endpoint(
+            ep_a,
             dir_a.path().into(),
             state_a.clone(),
             INTERVAL,
-            Arc::new(NoEvents),
+            Arc::new(a_connections.clone()),
         )
         .await
         .unwrap();
@@ -141,6 +188,10 @@ async fn a_denied_pairing_leaves_the_window_open() {
         mesh_a.pair_dial(b_addr);
 
         tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            a_connections.count() > 0,
+            "the pairing dial never landed — the refusal below would pass vacuously"
+        );
         assert!(
             !knows(dir_b.path(), &a_id),
             "a denied peer must not be trusted"
@@ -162,6 +213,10 @@ async fn a_denied_pairing_leaves_the_window_open() {
 #[tokio::test]
 async fn running_mesh_ticket_carries_a_relay_hint() {
     let dir = tempfile::tempdir().unwrap();
+    // Before the clock starts, not inside it: `Mesh::start` binds an endpoint,
+    // and the first bind in the process pays a one-time global init that has
+    // nothing to do with pairing (see `common::warm_network_stack`).
+    common::warm_network_stack().await;
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         let mesh = Mesh::start(
             dir.path().into(),
@@ -192,12 +247,18 @@ async fn running_mesh_ticket_carries_a_relay_hint() {
 async fn unknown_peer_is_refused_when_no_window_is_open() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
+    // Bound before the clock starts, and loopback-only: a ticket read from a
+    // mesh bound the product way carries this machine's LAN and Tailscale
+    // addresses, and dialing those hairpins back to the same host times out —
+    // so these tests used to assert about a connection that never formed.
+    let (ep_a, ep_b) = (common::bind_loopback().await, common::bind_loopback().await);
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         let state_a = state_with_note();
         let state_b = empty_state();
 
         // B: default-deny events and no armed window.
-        let mesh_b = Mesh::start(
+        let mesh_b = Mesh::start_with_endpoint(
+            ep_b,
             dir_b.path().into(),
             state_b.clone(),
             INTERVAL,
@@ -205,11 +266,13 @@ async fn unknown_peer_is_refused_when_no_window_is_open() {
         )
         .await
         .unwrap();
-        let mesh_a = Mesh::start(
+        let a_connections = CountConnections::default();
+        let mesh_a = Mesh::start_with_endpoint(
+            ep_a,
             dir_a.path().into(),
             state_a.clone(),
             INTERVAL,
-            Arc::new(NoEvents),
+            Arc::new(a_connections.clone()),
         )
         .await
         .unwrap();
@@ -219,6 +282,10 @@ async fn unknown_peer_is_refused_when_no_window_is_open() {
         mesh_a.pair_dial(b_addr);
 
         tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            a_connections.count() > 0,
+            "the dial never landed — the refusals below would pass vacuously"
+        );
         assert!(
             !knows(dir_b.path(), &a_id),
             "B trusted an unknown peer with no pairing window"

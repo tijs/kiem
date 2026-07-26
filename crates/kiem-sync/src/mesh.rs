@@ -135,7 +135,39 @@ impl Mesh {
         let lock = acquire_lock(&data_dir)?;
         let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
         let endpoint = endpoint::bind(secret_key).await?;
+        Self::assemble(lock, endpoint, data_dir, state, interval, events)
+    }
 
+    /// [`start`](Self::start) on an endpoint the caller bound itself — its
+    /// secret key stands in for the on-disk identity, so nothing is read from
+    /// or written to `data_dir` except the lock and the known-peers file.
+    ///
+    /// Exists so a caller can choose the endpoint's transport configuration.
+    /// The integration tests bind loopback-only: on a dev machine the addresses
+    /// in a freshly-read ticket are the LAN and Tailscale ones, and dialing
+    /// those hairpins back to the same host, which simply times out — pairing
+    /// tests then "passed" without a connection ever forming.
+    pub async fn start_with_endpoint(
+        endpoint: Endpoint,
+        data_dir: PathBuf,
+        state: SharedState,
+        interval: Duration,
+        events: Arc<dyn MeshEvents>,
+    ) -> Result<Arc<Mesh>, MeshError> {
+        let lock = acquire_lock(&data_dir)?;
+        Self::assemble(lock, endpoint, data_dir, state, interval, events)
+    }
+
+    /// Wires up a `Mesh` on an already-bound endpoint and held lock, and starts
+    /// its accept loop and one dial loop per already-known peer.
+    fn assemble(
+        lock: File,
+        endpoint: Endpoint,
+        data_dir: PathBuf,
+        state: SharedState,
+        interval: Duration,
+        events: Arc<dyn MeshEvents>,
+    ) -> Result<Arc<Mesh>, MeshError> {
         let mesh = Arc::new(Mesh {
             _lock: lock,
             endpoint,

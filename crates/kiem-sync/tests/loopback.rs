@@ -2,6 +2,8 @@
 //! the framing logic. Bounded by a timeout: this needs to bind real UDP
 //! sockets, which a fully network-isolated sandbox may refuse — a timeout
 //! failure there means "no local networking available", not a protocol bug.
+//! For that message to stay true the endpoints must not reach for anything
+//! beyond loopback; see `bind_loopback` and `warm_network_stack`.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,11 +12,15 @@ use kiem_core::note::NoteDoc;
 use kiem_core::store::NoteStore;
 use kiem_sync::SharedState;
 
+mod common;
+use common::bind_loopback;
+
 const TS: &str = "2026-01-01T00:00:00Z";
 
 fn empty_state() -> SharedState {
     kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
 }
+
 
 /// Aborts a spawned task when dropped, so a live iroh session (and its UDP
 /// socket) doesn't leak if a later assertion panics before the test's own
@@ -29,9 +35,12 @@ impl<T> Drop for AbortOnDrop<T> {
 
 #[tokio::test]
 async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
+    // Bound before the clock starts: see `bind_loopback` and `warm_network_stack` — the first bind in the
+    // process initialises iroh's global network stack, which is neither
+    // instant nor anything this test is asserting about.
+    let a_ep = bind_loopback().await;
+    let b_ep = bind_loopback().await;
     let outcome = tokio::time::timeout(Duration::from_secs(20), async {
-        let a_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
-        let b_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
         let b_addr = b_ep.addr();
 
         let a_state = empty_state();
@@ -132,9 +141,12 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
 /// the activity count (before the fix, they did — once per tick, forever).
 #[tokio::test]
 async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
+    // Bound before the clock starts: see `bind_loopback` and `warm_network_stack` — the first bind in the
+    // process initialises iroh's global network stack, which is neither
+    // instant nor anything this test is asserting about.
+    let a_ep = bind_loopback().await;
+    let b_ep = bind_loopback().await;
     let outcome = tokio::time::timeout(Duration::from_secs(20), async {
-        let a_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
-        let b_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
         let b_addr = b_ep.addr();
 
         let a_state = empty_state();
@@ -235,6 +247,9 @@ async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
 #[tokio::test]
 async fn pair_ticket_carries_a_relay_hint() {
     let dir = tempfile::tempdir().unwrap();
+    // `pair_ticket` binds its own endpoint, so it would otherwise pay the
+    // one-time network-stack init inside the budget (see `bind_loopback` and `warm_network_stack`).
+    drop(bind_loopback().await);
     let outcome = tokio::time::timeout(Duration::from_secs(30), async {
         let ticket = kiem_sync::pair_ticket(dir.path()).await.unwrap();
         let addr = kiem_sync::parse_ticket(&ticket).unwrap();
@@ -249,3 +264,4 @@ async fn pair_ticket_carries_a_relay_hint() {
         "timed out reaching a relay — likely no networking in this environment"
     );
 }
+
