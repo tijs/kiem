@@ -8,7 +8,9 @@
 //! Documents mid-initial-sync (known id, not yet enough changes to hydrate a
 //! valid note) are parked in `pending` rather than persisted; they move into
 //! the store the moment they hydrate. Sync states live in memory only — a
-//! restarted peer just pays a full (cheap) re-handshake.
+//! process restart pays a full per-document handshake, which on a store with
+//! hundreds of notes is not cheap; a mere *disconnect* keeps the reusable part
+//! (see [`SyncEngine::reset_peer`]).
 
 use std::collections::HashMap;
 
@@ -277,9 +279,29 @@ impl SyncEngine {
         self.pending.contains_key(doc_id)
     }
 
-    /// Drop all sync state for a peer (it reconnects with a fresh handshake).
-    pub fn forget_peer(&mut self, peer: &str) {
-        self.states.retain(|(p, _), _| p != peer);
+    /// Roll every per-document sync state for `peer` back to the part that
+    /// survives a connection: the shared heads. Session-scoped fields (what
+    /// they last said they had/needed, what we already sent, in-flight) are
+    /// cleared, so the next connection re-handshakes — but from the last point
+    /// both sides provably agreed on, not from nothing.
+    ///
+    /// This used to drop the states outright, on the reasoning that a
+    /// reconnect "just pays a cheap re-handshake". At 600+ documents it is not
+    /// cheap: with empty shared heads every document's opening message carries
+    /// a Bloom filter summarising that document's *entire* change graph, and
+    /// both peers recompute the full set of hashes to send.
+    ///
+    /// `State::encode` is defined as encoding exactly the state that should be
+    /// reused across connections, so the roundtrip is automerge's own answer to
+    /// "what survives a disconnect" rather than ours. If the peer really did
+    /// lose its document, it detects that our shared heads are unknown to it
+    /// and replies with a `SYNC_RESET` message, which starts over.
+    pub fn reset_peer(&mut self, peer: &str) {
+        for ((p, _), state) in self.states.iter_mut() {
+            if p == peer {
+                *state = State::decode(&state.encode()).unwrap_or_default();
+            }
+        }
     }
 
     fn state_for(&mut self, peer: &str, doc_id: &str) -> &mut State {
@@ -547,7 +569,7 @@ mod tests {
         converge(&mut a, &mut b);
 
         b.engine = SyncEngine::new(); // B "restarted"
-        a.engine.forget_peer("b");
+        a.engine.reset_peer("b");
         a.store
             .update_note("n1", "# Resume\n\nafter restart")
             .unwrap();
@@ -561,6 +583,79 @@ mod tests {
             .body
             .as_str()
             .contains("after restart"));
+    }
+
+    /// Two peers converged on one note with a long change history — enough
+    /// changes that "summarise the whole document" costs visibly more on the
+    /// wire than "summarise what changed since we last agreed".
+    fn converged_pair_with_history() -> (Peer, Peer) {
+        let (mut a, mut b) = (peer("a"), peer("b"));
+        a.store
+            .insert_note(&NoteDoc::new_with(
+                "n1".into(),
+                "# History",
+                "did:a",
+                TS.into(),
+            ))
+            .unwrap();
+        for i in 0..200 {
+            a.store
+                .update_note("n1", &format!("# History\n\nedit {i}"))
+                .unwrap();
+        }
+        converge(&mut a, &mut b);
+        (a, b)
+    }
+
+    /// Like `converge`, but returns the bytes that crossed the wire.
+    fn converge_bytes(a: &mut Peer, b: &mut Peer) -> usize {
+        fn pump_bytes(from: &mut Peer, to: &mut Peer) -> usize {
+            let mut bytes = 0;
+            for id in from.engine.doc_ids(&from.store).unwrap() {
+                if let Some(msg) = from
+                    .engine
+                    .generate_message(&from.store, to.name, &id)
+                    .unwrap()
+                {
+                    bytes += msg.len();
+                    to.engine
+                        .receive_message(&mut to.store, from.name, &id, &msg)
+                        .unwrap();
+                }
+            }
+            bytes
+        }
+        let mut total = 0;
+        loop {
+            let round = pump_bytes(a, b) + pump_bytes(b, a);
+            if round == 0 {
+                return total;
+            }
+            total += round;
+        }
+    }
+
+    #[test]
+    fn reconnecting_resumes_from_shared_heads_instead_of_re_summarising() {
+        // A disconnect (reset_peer) must stay cheaper than a process restart
+        // (states gone): the reconnect handshake should Bloom-summarise only
+        // what changed since the last agreed heads, not the whole document.
+        let (mut a, mut b) = converged_pair_with_history();
+        a.engine.reset_peer("b");
+        b.engine.reset_peer("a");
+        let resumed = converge_bytes(&mut a, &mut b);
+
+        let (mut a, mut b) = converged_pair_with_history();
+        a.engine = SyncEngine::new();
+        b.engine = SyncEngine::new();
+        let cold = converge_bytes(&mut a, &mut b);
+
+        // Measured at 200 changes on one note: 183 bytes resumed vs 408 cold.
+        assert!(
+            resumed * 2 < cold,
+            "reconnect after a disconnect should resume from shared heads: \
+             {resumed} bytes vs {cold} for a cold restart"
+        );
     }
 
     /// Like `converge`, but bails out after `max_rounds` instead of looping

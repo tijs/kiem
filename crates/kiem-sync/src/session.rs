@@ -140,7 +140,7 @@ pub async fn run(
 
     let result = reader_loop(&mut recv, &state, peer_id, &send, &handshake).await;
 
-    state.lock().1.forget_peer(&peer);
+    state.lock().1.reset_peer(&peer);
     ticker.abort();
     result
 }

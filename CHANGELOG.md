@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Changed: reconnecting to a paired device after the connection drops now resumes from where the two devices last agreed, instead of re-negotiating every note from scratch. Sync state was discarded outright on every disconnect, on the assumption that a fresh handshake is cheap — on a store with hundreds of notes it is not, because each note's opening message then has to summarise that note's entire history. What survives a disconnect is now exactly what the sync library defines as safe to reuse; a device that genuinely lost its copy still starts over, as before.
+
 ## 0.2.3 - 2026-07-25
 
 - Fixed: the app could freeze for seconds during ordinary note actions — adding a tag, deleting, pinning, creating a note — on a store with hundreds of notes and sync running. Every call into the core ran on the main thread and waited on the same lock the background sync round holds for its whole tick, so anything landing mid-tick blocked the whole UI. Those calls now run off the main thread, and the window stays responsive while they complete. The underlying per-tick cost is unchanged, so a slow action can still take a moment — it just no longer freezes the app while it does.
