@@ -2,7 +2,12 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use iroh::{endpoint::presets, Endpoint, SecretKey};
+use kiem_core::store::NoteStore;
+use kiem_sync::{PeerHandshake, SharedState};
 
 /// A genuinely loopback endpoint speaking kiem's ALPN: `127.0.0.1` only, no
 /// relay, no n0 DNS publishing.
@@ -44,4 +49,34 @@ pub async fn bind_loopback() -> Endpoint {
 /// so instead of an unexplained timeout.
 pub async fn warm_network_stack() {
     drop(bind_loopback().await);
+}
+
+/// A session's shared store + engine, backed by an in-memory store.
+pub fn empty_state() -> SharedState {
+    kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
+}
+
+/// A handshake that only counts sync activity — the callbacks most tests
+/// don't assert on.
+pub fn handshake(ticket: String, name: &str, activity: Arc<AtomicUsize>) -> PeerHandshake {
+    PeerHandshake {
+        local_ticket: ticket,
+        local_name: name.to_owned(),
+        on_peer: Arc::new(|_addr| {}),
+        on_name: Arc::new(|_peer, _name| {}),
+        on_sync_activity: Arc::new(move |_peer| {
+            activity.fetch_add(1, Ordering::Relaxed);
+        }),
+    }
+}
+
+/// Aborts a spawned task when dropped, so a live iroh session (and its UDP
+/// socket) doesn't leak if a later assertion panics before the test's own
+/// explicit cleanup would otherwise run.
+pub struct AbortOnDrop<T>(pub tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }

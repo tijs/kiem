@@ -296,6 +296,15 @@ impl SyncEngine {
     /// "what survives a disconnect" rather than ours. If the peer really did
     /// lose its document, it detects that our shared heads are unknown to it
     /// and replies with a `SYNC_RESET` message, which starts over.
+    ///
+    /// Keeping the entries means nothing removes them: a `(peer, doc)` state
+    /// lives for the rest of the process once seen. That is bounded by the
+    /// paired-device count (the trust gate means only paired peers ever
+    /// connect) and it is the whole point for those peers. The gap is
+    /// unpairing — there is no unpair path in the product today (`KnownPeers`
+    /// has `add` and no removal), so whoever adds one must also add a real
+    /// `forget_peer` that drops these entries, or a long-lived daemon will
+    /// hold a removed device's states until restart.
     pub fn reset_peer(&mut self, peer: &str) {
         for ((p, _), state) in self.states.iter_mut() {
             if p == peer {
@@ -588,6 +597,10 @@ mod tests {
     /// Two peers converged on one note with a long change history — enough
     /// changes that "summarise the whole document" costs visibly more on the
     /// wire than "summarise what changed since we last agreed".
+    ///
+    /// The change count is the headroom knob for the guard below, and it is
+    /// also what this helper costs (it runs twice, ~13s in a debug build at
+    /// 300) — see the numbers on that assertion before raising it further.
     fn converged_pair_with_history() -> (Peer, Peer) {
         let (mut a, mut b) = (peer("a"), peer("b"));
         a.store
@@ -598,7 +611,7 @@ mod tests {
                 TS.into(),
             ))
             .unwrap();
-        for i in 0..200 {
+        for i in 0..300 {
             a.store
                 .update_note("n1", &format!("# History\n\nedit {i}"))
                 .unwrap();
@@ -650,7 +663,12 @@ mod tests {
         b.engine = SyncEngine::new();
         let cold = converge_bytes(&mut a, &mut b);
 
-        // Measured at 200 changes on one note: 183 bytes resumed vs 408 cold.
+        // Measured on this fixture (one note, 300 changes): 183 bytes resumed
+        // vs 533 cold — the assertion clears by ~1.5x. `resumed` is flat in
+        // the change count and `cold` grows with it (~1.2 bytes/change), so
+        // the fixture size is the headroom knob: 200 changes left only ~10%,
+        // which is close enough to the edge that a change in automerge's
+        // Bloom sizing would flip this red with nothing here broken.
         assert!(
             resumed * 2 < cold,
             "reconnect after a disconnect should resume from shared heads: \

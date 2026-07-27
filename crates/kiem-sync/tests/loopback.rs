@@ -5,33 +5,16 @@
 //! For that message to stay true the endpoints must not reach for anything
 //! beyond loopback; see `bind_loopback` and `warm_network_stack`.
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
-use kiem_core::store::NoteStore;
-use kiem_sync::SharedState;
 
 mod common;
-use common::bind_loopback;
+use common::{bind_loopback, empty_state, handshake, AbortOnDrop};
 
 const TS: &str = "2026-01-01T00:00:00Z";
-
-fn empty_state() -> SharedState {
-    kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
-}
-
-
-/// Aborts a spawned task when dropped, so a live iroh session (and its UDP
-/// socket) doesn't leak if a later assertion panics before the test's own
-/// explicit cleanup would otherwise run.
-struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
 
 #[tokio::test]
 async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
@@ -231,6 +214,165 @@ async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
             *a_activity.lock().unwrap(),
             settled_count,
             "activity kept firing on idle rounds after convergence instead of settling"
+        );
+    })
+    .await;
+
+    assert!(
+        outcome.is_ok(),
+        "timed out waiting for a loopback iroh connection — likely no local networking in this environment"
+    );
+}
+
+/// The production disconnect path, which no other test covers: a live
+/// `session::run` ends, its last line calls `SyncEngine::reset_peer`, and the
+/// peers reconnect. Two claims, both about that call:
+///
+/// 1. What it leaves behind is *resumable* — the opening message of the next
+///    connection summarises only what changed since the last agreed heads. A
+///    fresh engine has to Bloom-summarise the document's whole change graph,
+///    which is what the old `retain`-based `forget_peer` forced on every
+///    reconnect (the bug this fixes).
+/// 2. That retained state still converges a *new* connection. Stale sync state
+///    meeting a fresh session is exactly the shape of this project's past
+///    livelocks, so eventual replication is asserted, not assumed.
+///
+/// The fiddly part is ending the session for real: aborting the task (what the
+/// tests above do) skips the `reset_peer` line entirely. Closing the connection
+/// makes both reader loops return, so `run` finishes normally on both sides.
+#[tokio::test]
+async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates() {
+    // Bound before the clock starts: see `bind_loopback` and `warm_network_stack`.
+    let a_ep = bind_loopback().await;
+    let b_ep = bind_loopback().await;
+    let outcome = tokio::time::timeout(Duration::from_secs(30), async {
+        let b_addr = b_ep.addr();
+        let b_peer = b_ep.id().to_string();
+        let (a_state, b_state) = (empty_state(), empty_state());
+
+        // Enough history that "summarise the whole document" costs visibly
+        // more than "summarise what changed since we last agreed" — same
+        // fixture shape as the unit test in kiem-core's sync.rs.
+        a_state
+            .lock()
+            .0
+            .insert_note(&NoteDoc::new_with(
+                "n1".into(),
+                "# History",
+                "did:a",
+                TS.into(),
+            ))
+            .unwrap();
+        for i in 0..200 {
+            a_state
+                .lock()
+                .0
+                .update_note("n1", &format!("# History\n\nedit {i}"))
+                .unwrap();
+        }
+
+        let noise = Arc::new(AtomicUsize::new(0));
+        let a_hs = handshake(kiem_sync::my_ticket(&a_ep).to_string(), "A", noise.clone());
+        let b_hs = handshake(kiem_sync::my_ticket(&b_ep).to_string(), "B", noise.clone());
+        let tick = Duration::from_millis(20);
+
+        // Session 1: converge.
+        let accept_task = tokio::spawn({
+            let (b_ep, b_state, b_hs) = (b_ep.clone(), b_state.clone(), b_hs.clone());
+            async move {
+                let conn = kiem_sync::accept(&b_ep).await.unwrap().unwrap();
+                kiem_sync::run_session(conn, false, b_state, tick, b_hs).await
+            }
+        });
+        let conn = kiem_sync::connect(&a_ep, b_addr.clone()).await.unwrap();
+        let closer = conn.clone();
+        let connect_task = tokio::spawn(kiem_sync::run_session(
+            conn,
+            true,
+            a_state.clone(),
+            tick,
+            a_hs.clone(),
+        ));
+
+        let mut synced = false;
+        for _ in 0..200 {
+            if b_state.lock().0.get_note("n1").unwrap().is_some() {
+                synced = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(synced, "note did not sync over the first session");
+
+        // Disconnect for real: both `run` calls return, so both run their
+        // `reset_peer`. Awaiting the handles is what makes that ordering
+        // guaranteed rather than racy.
+        closer.close(0u32.into(), b"test done");
+        let _ = connect_task.await;
+        let _ = accept_task.await;
+
+        // Claim 1: the state left behind resumes from the shared heads.
+        let resumed = {
+            let (store, engine) = &mut *a_state.lock();
+            engine
+                .generate_message(store, &b_peer, "n1")
+                .unwrap()
+                .expect("a reconnect still opens with a sync message")
+                .len()
+        };
+        let cold = {
+            let (store, _) = &mut *a_state.lock();
+            kiem_core::sync::SyncEngine::new()
+                .generate_message(store, &b_peer, "n1")
+                .unwrap()
+                .expect("a cold engine opens with a sync message")
+                .len()
+        };
+        assert!(
+            resumed * 2 < cold,
+            "the session's reset_peer did not retain shared heads: reconnect \
+             opens with {resumed} bytes vs {cold} for a cold engine"
+        );
+
+        // Claim 2: a new note still replicates over the reconnect.
+        a_state
+            .lock()
+            .0
+            .insert_note(&NoteDoc::new_with(
+                "n2".into(),
+                "# After the reconnect",
+                "did:a",
+                TS.into(),
+            ))
+            .unwrap();
+
+        let _accept_task = AbortOnDrop(tokio::spawn({
+            let (b_ep, b_state) = (b_ep.clone(), b_state.clone());
+            async move {
+                let conn = kiem_sync::accept(&b_ep).await.unwrap().unwrap();
+                kiem_sync::run_session(conn, false, b_state, tick, b_hs).await
+            }
+        }));
+        let conn = kiem_sync::connect(&a_ep, b_addr).await.unwrap();
+        let _connect_task = AbortOnDrop(tokio::spawn(kiem_sync::run_session(
+            conn,
+            true,
+            a_state.clone(),
+            tick,
+            a_hs,
+        )));
+
+        let mut resynced = false;
+        for _ in 0..200 {
+            if b_state.lock().0.get_note("n2").unwrap().is_some() {
+                resynced = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            resynced,
+            "the note written after the disconnect never replicated over the reconnect"
         );
     })
     .await;

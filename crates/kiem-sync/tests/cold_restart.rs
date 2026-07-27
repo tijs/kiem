@@ -12,9 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
-use kiem_core::store::NoteStore;
 use kiem_core::sync::SyncEngine;
 use kiem_sync::SharedState;
+
+mod common;
+use common::{bind_loopback, empty_state, handshake, AbortOnDrop};
 
 const TS: &str = "2026-01-01T00:00:00Z";
 /// Sized for a debug-profile `cargo test` run, not for the reported 610-note
@@ -22,30 +24,6 @@ const TS: &str = "2026-01-01T00:00:00Z";
 /// a faithful count here would dominate the suite. Raise it (and use
 /// `--release`) when probing scale rather than correctness.
 const SHARED_DOCS: usize = 80;
-
-struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-fn empty_state() -> SharedState {
-    kiem_sync::shared_state(NoteStore::open_in_memory_with_search().unwrap())
-}
-
-fn handshake(ticket: String, name: &str, activity: Arc<AtomicUsize>) -> kiem_sync::PeerHandshake {
-    kiem_sync::PeerHandshake {
-        local_ticket: ticket,
-        local_name: name.to_owned(),
-        on_peer: Arc::new(|_addr| {}),
-        on_name: Arc::new(|_peer, _name| {}),
-        on_sync_activity: Arc::new(move |_peer| {
-            activity.fetch_add(1, Ordering::Relaxed);
-        }),
-    }
-}
 
 /// Bring both stores to the state a converged pair of peers is in *before*
 /// the restart: A creates `SHARED_DOCS` notes, then the two are driven to
@@ -108,9 +86,10 @@ fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
+    // Bound before the clock starts: see `bind_loopback` and `warm_network_stack`.
+    let a_ep = bind_loopback().await;
+    let b_ep = bind_loopback().await;
     let outcome = tokio::time::timeout(Duration::from_secs(120), async {
-        let a_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
-        let b_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
         let b_addr = b_ep.addr();
 
         let a_state = empty_state();
@@ -225,9 +204,10 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
 /// reader must take that same mutex to answer each frame it reads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_peers_pushing_a_large_backlog_at_once_still_converge() {
+    // Bound before the clock starts: see `bind_loopback` and `warm_network_stack`.
+    let a_ep = bind_loopback().await;
+    let b_ep = bind_loopback().await;
     let outcome = tokio::time::timeout(Duration::from_secs(90), async {
-        let a_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
-        let b_ep = kiem_sync::bind(iroh::SecretKey::generate()).await.unwrap();
         let b_addr = b_ep.addr();
 
         let a_state = empty_state();
