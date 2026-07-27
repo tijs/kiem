@@ -5,25 +5,31 @@
 //! stdin (pipe-friendly). Titles are never set directly — they derive from
 //! the body per the content contract, so `--title` is sugar that prepends an
 //! H1 heading line.
+//!
+//! This file is dispatch only: parse, resolve the data dir, open the store,
+//! hand off. The handlers live per concern — [`notes`], [`todos`],
+//! [`transfer`], [`bulk`], [`pair`], [`daemon`] — and shape their output
+//! through [`output`].
 
 mod args;
 mod bulk;
 mod control;
 mod daemon;
+mod notes;
+mod output;
 mod pair;
 mod project;
+mod todos;
+mod transfer;
 
-use kiem_core::transfer;
-
-use std::io::{IsTerminal, Read};
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 
-use args::{Cli, Command, NoteAction, PairAction, ProjectAction, TodoAction};
-use kiem_core::note::NoteMetadata;
+use args::{Cli, Command, PairAction, ProjectAction, TodoAction};
 use kiem_core::store::NoteStore;
+use output::print_json;
 use serde_json::json;
 
 /// Note authorship: this device's iroh `EndpointId` (the persisted identity
@@ -77,389 +83,39 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Create { title, body } => {
-            let body = compose_body(title, body)?;
-            let meta = store.create_note(&body, &author(&data_dir)?)?;
-            if cli.json {
-                print_json(&serde_json::to_value(&meta)?)?;
-            } else {
-                println!("Created: {} ({})", display_title(&meta), meta.id);
-            }
+            notes::create(&mut store, &data_dir, title, body, cli.json)?
         }
-        Command::List { tag } => {
-            let notes = match tag {
-                Some(tag) => store.list_by_tag(&tag)?,
-                None => store.list_notes()?,
-            };
-            if cli.json {
-                print_json(&serde_json::to_value(&notes)?)?;
-            } else {
-                for m in &notes {
-                    println!(
-                        "{}  {}  {}{}",
-                        m.id,
-                        m.modified_at,
-                        display_title(m),
-                        tag_suffix(m)
-                    );
-                }
-            }
-        }
-        Command::Show { id } => {
-            let note = store
-                .get_note(&id)?
-                .with_context(|| format!("note not found: {id}"))?;
-            let version = store.note_version(&id).map_err(not_found_context(&id))?;
-            if cli.json {
-                let mut value = serde_json::to_value(&note.metadata)?;
-                value["body"] = json!(note.body.as_str());
-                // `version` is the token to pass to `edit-lines --expect` so an
-                // edit is rejected if the note changed since this read.
-                value["version"] = json!(version);
-                print_json(&value)?;
-            } else {
-                let m = &note.metadata;
-                println!("id:       {}", m.id);
-                println!("created:  {}", m.created_at);
-                println!("modified: {}", m.modified_at);
-                println!("tags:     {}", m.tags.join(", "));
-                println!("version:  {version}");
-                println!();
-                // 1-based line numbers so `edit-lines <id> <start> <end>` can
-                // address a line without the reader counting by hand.
-                for (i, line) in note.body.as_str().split('\n').enumerate() {
-                    println!("{:>4}  {line}", i + 1);
-                }
-            }
-        }
-        Command::Edit { id, body } => {
-            let body = body
-                .or_else(read_stdin)
-                .context("provide --body or pipe content on stdin")?;
-            let meta = store
-                .update_note(&id, &body)
-                .map_err(not_found_context(&id))?;
-            if cli.json {
-                print_json(&serde_json::to_value(&meta)?)?;
-            } else {
-                println!("Updated: {} ({})", display_title(&meta), meta.id);
-            }
-        }
+        Command::List { tag } => notes::list(&store, tag, cli.json)?,
+        Command::Show { id } => notes::show(&store, id, cli.json)?,
+        Command::Edit { id, body } => notes::edit(&mut store, id, body, cli.json)?,
         Command::EditLines {
             id,
             start,
             end,
             text,
             expect,
-        } => {
-            let text = text.or_else(read_stdin).unwrap_or_default();
-            let meta = store
-                .edit_lines(&id, expect.as_deref(), start, end, &text)
-                .map_err(not_found_context(&id))?;
-            if cli.json {
-                print_json(&serde_json::to_value(&meta)?)?;
-            } else {
-                println!(
-                    "Edited lines {start}..={end} of {} ({})",
-                    display_title(&meta),
-                    meta.id
-                );
-            }
-        }
-        Command::Search { query, limit } => {
-            let results = store.search(&query, limit)?;
-            if cli.json {
-                print_json(&serde_json::to_value(&results)?)?;
-            } else {
-                for r in &results {
-                    let title = if r.title.is_empty() {
-                        "(untitled)"
-                    } else {
-                        &r.title
-                    };
-                    let snippet = r.snippet.split_whitespace().collect::<Vec<_>>().join(" ");
-                    println!("{}  {title} — {snippet}", r.note_id);
-                }
-            }
-        }
-        Command::Tags => {
-            let tags = store.list_tags()?;
-            if cli.json {
-                let value: Vec<_> = tags
-                    .iter()
-                    .map(|(tag, count)| json!({"tag": tag, "count": count}))
-                    .collect();
-                print_json(&serde_json::to_value(value)?)?;
-            } else {
-                for (tag, count) in &tags {
-                    println!("{tag} ({count})");
-                }
-            }
-        }
-        Command::Bulk(args) => bulk::run(&mut store, args, cli.json)?,
-        Command::Delete { id } => {
-            let meta = store.delete_note(&id).map_err(not_found_context(&id))?;
-            if cli.json {
-                print_json(&json!({"id": meta.id, "deleted": true}))?;
-            } else {
-                println!("Deleted: {} ({})", display_title(&meta), meta.id);
-            }
-        }
-        Command::Project { action } => match action {
-            ProjectAction::Add { name } => {
-                let tag = project::require_tag(&name)?;
-                let cwd = std::env::current_dir().context("reading current directory")?;
-                let marker = project::write_marker(&cwd, &tag)?;
-                project::ensure_agents_pointer(&cwd, &tag)?;
-                // Create a home note only if this project tag is new, so `add`
-                // is idempotent (re-binding an existing project just rewrites the marker).
-                let created = if store.list_by_tag(&tag)?.is_empty() {
-                    let body = format!("# {name}\n\nProject home.\n\n#{tag}");
-                    Some(store.create_note(&body, &author(&data_dir)?)?)
-                } else {
-                    None
-                };
-                if cli.json {
-                    print_json(&json!({
-                        "project": tag,
-                        "marker": marker.display().to_string(),
-                        "home_note": created.as_ref().map(|m| m.id.clone()),
-                    }))?;
-                } else {
-                    println!("Project {tag}");
-                    println!("  marker: {}", marker.display());
-                    match &created {
-                        Some(m) => println!("  home note: {}", m.id),
-                        None => println!("  (existing project — bound this directory)"),
-                    }
-                }
-            }
-            ProjectAction::List => {
-                let projects: Vec<_> = store
-                    .list_tags()?
-                    .into_iter()
-                    .filter(|(tag, _)| tag.starts_with(project::TAG_PREFIX))
-                    .collect();
-                if cli.json {
-                    let value: Vec<_> = projects
-                        .iter()
-                        .map(|(tag, notes)| json!({"project": tag, "notes": notes}))
-                        .collect();
-                    print_json(&serde_json::to_value(value)?)?;
-                } else if projects.is_empty() {
-                    println!("(no projects yet — create one with `kiem project add <name>`)");
-                } else {
-                    for (tag, notes) in &projects {
-                        println!("{tag} ({notes})");
-                    }
-                }
-            }
-            ProjectAction::Current => {
-                let cwd = std::env::current_dir().context("reading current directory")?;
-                let tag = project::resolve(&cwd, None)?;
-                // `resolve` always succeeds via the directory-name fallback, so
-                // success alone doesn't mean the repo is onboarded — check the
-                // marker directly and say so explicitly.
-                let onboarded = project::read_marker(&cwd)?.is_some();
-                if cli.json {
-                    print_json(&json!({"project": tag, "onboarded": onboarded}))?;
-                } else {
-                    println!("{tag}");
-                    if !onboarded {
-                        eprintln!(
-                            "(no committed .kiem marker — this is a directory-name guess, \
-                             not an onboarded project; run `kiem project add` to onboard)"
-                        );
-                    }
-                }
-            }
-        },
-        Command::Todos {
-            project: project_override,
-        } => {
-            let cwd = std::env::current_dir().context("reading current directory")?;
-            let tag = project::resolve(&cwd, project_override.as_deref())?;
-            let todos = store.list_todo_items_for_tag(&tag)?;
-            if cli.json {
-                print_json(&serde_json::to_value(&todos)?)?;
-            } else if todos.is_empty() {
-                println!("(no open todos in {tag})");
-            } else {
-                for t in &todos {
-                    println!("{}  {}  {}", t.note_id, t.index, t.text);
-                }
-            }
-        }
+        } => notes::edit_lines(&mut store, id, start, end, text, expect, cli.json)?,
+        Command::Search { query, limit } => notes::search(&store, query, limit, cli.json)?,
+        Command::Tags => notes::tags(&store, cli.json)?,
+        Command::Delete { id } => notes::delete(&mut store, id, cli.json)?,
+        Command::Note { action } => notes::add(&mut store, &data_dir, action, cli.json)?,
+        Command::Notes {
+            project,
+            note_type,
+        } => notes::list_project(&store, project, note_type, cli.json)?,
+        Command::Todos { project } => todos::list(&store, project, cli.json)?,
         Command::Todo {
             action: TodoAction::Add { note_id, text },
-        } => {
-            if text.trim().is_empty() {
-                bail!("todo text is empty");
-            }
-            let meta = store
-                .add_todo(&note_id, &text)
-                .map_err(not_found_context(&note_id))?;
-            if cli.json {
-                print_json(&serde_json::to_value(&meta)?)?;
-            } else {
-                println!("Added todo to {} ({})", display_title(&meta), meta.id);
-            }
-        }
-        Command::Todo { action } => {
-            let (note_id, indices, checked) = match action {
-                TodoAction::Add { .. } => unreachable!("handled above"),
-                TodoAction::Check { note_id, indices } => (note_id, indices, true),
-                TodoAction::Uncheck { note_id, indices } => (note_id, indices, false),
-            };
-            let meta = store
-                .set_todos_checked(&note_id, &indices, checked)
-                .map_err(not_found_context(&note_id))?;
-            if cli.json {
-                print_json(&json!({"id": meta.id, "indices": indices, "checked": checked}))?;
-            } else {
-                let verb = if checked { "Checked" } else { "Unchecked" };
-                let noun = if indices.len() == 1 { "todo" } else { "todos" };
-                let positions = indices
-                    .iter()
-                    .map(usize::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                println!(
-                    "{verb} {noun} {positions} in {} ({})",
-                    display_title(&meta),
-                    meta.id
-                );
-            }
-        }
-        Command::Note { action } => match action {
-            NoteAction::Add {
-                text,
-                file,
-                project: project_override,
-                note_type,
-            } => {
-                let text = match (text, file) {
-                    (Some(t), _) => t,
-                    (None, Some(path)) => std::fs::read_to_string(&path)
-                        .with_context(|| format!("reading note body from {}", path.display()))?,
-                    (None, None) => read_stdin()
-                        .context("provide note text, --file <path>, or pipe content on stdin")?,
-                };
-                let cwd = std::env::current_dir().context("reading current directory")?;
-                let tag = project::resolve(&cwd, project_override.as_deref())?;
-                let body = project::ensure_tag(&text, &tag);
-                let meta = store.create_note_with_type(
-                    &body,
-                    &author(&data_dir)?,
-                    note_type.as_deref().unwrap_or_default(),
-                )?;
-                if cli.json {
-                    print_json(&serde_json::to_value(&meta)?)?;
-                } else {
-                    println!("Added to {tag}: {} ({})", display_title(&meta), meta.id);
-                }
-            }
-            NoteAction::SetType { note_id, note_type } => {
-                let meta = store
-                    .set_note_type(&note_id, &note_type)
-                    .map_err(not_found_context(&note_id))?;
-                if cli.json {
-                    print_json(&serde_json::to_value(&meta)?)?;
-                } else {
-                    println!("Set {} to type {}", meta.id, meta.note_type);
-                }
-            }
-        },
-        Command::Notes {
-            project: project_override,
-            note_type,
-        } => {
-            let cwd = std::env::current_dir().context("reading current directory")?;
-            let tag = project::resolve(&cwd, project_override.as_deref())?;
-            let notes = match &note_type {
-                Some(t) => store.list_by_tag_and_type(&tag, t)?,
-                None => store.list_by_tag(&tag)?,
-            };
-            if cli.json {
-                print_json(&serde_json::to_value(&notes)?)?;
-            } else {
-                for m in &notes {
-                    println!(
-                        "{}  {}  {}{}",
-                        m.id,
-                        m.modified_at,
-                        display_title(m),
-                        tag_suffix(m)
-                    );
-                }
-            }
-        }
-        Command::Export { dir, project: only } => match only {
-            Some(name) => {
-                let tag = project::require_tag(&name)?;
-                let written = transfer::export_project(&store, &dir, &tag)?;
-                if cli.json {
-                    print_json(&json!({"written": written, "project": tag}))?;
-                } else {
-                    println!("Exported {written} notes from {tag} to {}", dir.display());
-                }
-            }
-            None => {
-                let (written, skipped) = transfer::export_all(&store, &dir)?;
-                if cli.json {
-                    print_json(&json!({"written": written, "skipped_without_project": skipped}))?;
-                } else {
-                    println!("Exported {written} notes to {}", dir.display());
-                    if skipped > 0 {
-                        println!("(skipped {skipped} notes without a project — export is per-project; give them a #proj/<slug> tag to include them)");
-                    }
-                }
-            }
-        },
+        } => todos::add(&mut store, note_id, text, cli.json)?,
+        Command::Todo { action } => todos::set(&mut store, action, cli.json)?,
+        Command::Bulk(args) => bulk::run(&mut store, args, cli.json)?,
+        Command::Project { action } => project_cmd(&mut store, &data_dir, action, cli.json)?,
+        Command::Export { dir, project } => transfer::export(&store, dir, project, cli.json)?,
         Command::Import {
             dir,
-            project: project_override,
+            project,
             no_project,
-        } => {
-            let tag_override = project_override
-                .as_deref()
-                .map(project::require_tag)
-                .transpose()?;
-            let source = match (&tag_override, no_project) {
-                (_, true) => transfer::ProjectSource::None,
-                (Some(tag), _) => transfer::ProjectSource::Tag(tag),
-                (None, false) => transfer::ProjectSource::Folders,
-            };
-            let (created, skipped) =
-                transfer::import(&mut store, &dir, &author(&data_dir)?, source)
-                    // Core can't name CLI flags; "explicitly" means --project here.
-                    .map_err(|e| match e {
-                        transfer::TransferError::NoProject { .. } => {
-                            anyhow::anyhow!("{e} (--project <name>, or --no-project)")
-                        }
-                        other => other.into(),
-                    })?;
-            if cli.json {
-                let created: Vec<_> = created
-                    .iter()
-                    .map(|(file, meta)| json!({"file": file.display().to_string(), "note": meta}))
-                    .collect();
-                print_json(&json!({"created": created, "skipped_duplicates": skipped}))?;
-            } else {
-                for (_, meta) in &created {
-                    println!("{}  {}{}", meta.id, display_title(meta), tag_suffix(meta));
-                }
-                println!(
-                    "Imported {} notes from {}{}",
-                    created.len(),
-                    dir.display(),
-                    if skipped > 0 {
-                        format!(" ({skipped} already present, skipped)")
-                    } else {
-                        String::new()
-                    }
-                );
-            }
-        }
+        } => transfer::import(&mut store, &data_dir, dir, project, no_project, cli.json)?,
         Command::Sync { .. } | Command::SyncStatus | Command::Pair { .. } => {
             unreachable!("handled above")
         }
@@ -467,53 +123,82 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Body from explicit flags and/or stdin. `--title` prepends an H1 so the
-/// derived title matches what the user asked for.
-fn compose_body(title: Option<String>, body: Option<String>) -> Result<String> {
-    let body = body.or_else(read_stdin);
-    match (title, body) {
-        (Some(t), Some(b)) => Ok(format!("# {t}\n\n{b}")),
-        (Some(t), None) => Ok(format!("# {t}")),
-        (None, Some(b)) => Ok(b),
-        (None, None) => bail!("provide --body, --title, or pipe content on stdin"),
+/// The `kiem project` commands. The heavy lifting is in `project.rs`;
+/// this is dispatch and output.
+fn project_cmd(
+    store: &mut NoteStore,
+    data_dir: &Path,
+    action: ProjectAction,
+    as_json: bool,
+) -> Result<()> {
+    match action {
+    ProjectAction::Add { name } => {
+        let tag = project::require_tag(&name)?;
+        let cwd = std::env::current_dir().context("reading current directory")?;
+        let marker = project::write_marker(&cwd, &tag)?;
+        project::ensure_agents_pointer(&cwd, &tag)?;
+        // Create a home note only if this project tag is new, so `add`
+        // is idempotent (re-binding an existing project just rewrites the marker).
+        let created = if store.list_by_tag(&tag)?.is_empty() {
+            let body = format!("# {name}\n\nProject home.\n\n#{tag}");
+            Some(store.create_note(&body, &author(data_dir)?)?)
+        } else {
+            None
+        };
+        if as_json {
+            print_json(&json!({
+                "project": tag,
+                "marker": marker.display().to_string(),
+                "home_note": created.as_ref().map(|m| m.id.clone()),
+            }))?;
+        } else {
+            println!("Project {tag}");
+            println!("  marker: {}", marker.display());
+            match &created {
+                Some(m) => println!("  home note: {}", m.id),
+                None => println!("  (existing project — bound this directory)"),
+            }
+        }
     }
-}
-
-fn read_stdin() -> Option<String> {
-    let mut stdin = std::io::stdin();
-    if stdin.is_terminal() {
-        return None;
+    ProjectAction::List => {
+        let projects: Vec<_> = store
+            .list_tags()?
+            .into_iter()
+            .filter(|(tag, _)| tag.starts_with(project::TAG_PREFIX))
+            .collect();
+        if as_json {
+            let value: Vec<_> = projects
+                .iter()
+                .map(|(tag, notes)| json!({"project": tag, "notes": notes}))
+                .collect();
+            print_json(&serde_json::to_value(value)?)?;
+        } else if projects.is_empty() {
+            println!("(no projects yet — create one with `kiem project add <name>`)");
+        } else {
+            for (tag, notes) in &projects {
+                println!("{tag} ({notes})");
+            }
+        }
     }
-    let mut buf = String::new();
-    stdin.read_to_string(&mut buf).ok()?;
-    let trimmed = buf.trim_end();
-    (!trimmed.is_empty()).then(|| trimmed.to_owned())
-}
-
-fn display_title(m: &NoteMetadata) -> &str {
-    if m.title.is_empty() {
-        "(untitled)"
-    } else {
-        &m.title
+    ProjectAction::Current => {
+        let cwd = std::env::current_dir().context("reading current directory")?;
+        let tag = project::resolve(&cwd, None)?;
+        // `resolve` always succeeds via the directory-name fallback, so
+        // success alone doesn't mean the repo is onboarded — check the
+        // marker directly and say so explicitly.
+        let onboarded = project::read_marker(&cwd)?.is_some();
+        if as_json {
+            print_json(&json!({"project": tag, "onboarded": onboarded}))?;
+        } else {
+            println!("{tag}");
+            if !onboarded {
+                eprintln!(
+                    "(no committed .kiem marker — this is a directory-name guess, \
+                     not an onboarded project; run `kiem project add` to onboard)"
+                );
+            }
+        }
     }
-}
-
-fn tag_suffix(m: &NoteMetadata) -> String {
-    if m.tags.is_empty() {
-        String::new()
-    } else {
-        format!("  [{}]", m.tags.join(", "))
     }
-}
-
-fn not_found_context(id: &str) -> impl FnOnce(kiem_core::store::StoreError) -> anyhow::Error + '_ {
-    move |err| match err {
-        kiem_core::store::StoreError::NotFound(_) => anyhow::anyhow!("note not found: {id}"),
-        other => other.into(),
-    }
-}
-
-fn print_json(value: &serde_json::Value) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
