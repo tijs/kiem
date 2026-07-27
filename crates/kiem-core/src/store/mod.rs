@@ -13,12 +13,18 @@
 //!
 //! Tag filtering matches exactly (`work` does not match `work/meetings`);
 //! nested-tag grouping is a UI concern.
+//!
+//! `NoteStore` is one type across five files — this one holds the schema,
+//! opening, and note CRUD; [`queries`] every read; [`write`] the machinery
+//! every mutation funnels through; [`purge`] permanent erasure; [`todos`]
+//! checkbox edits. Child modules, so they reach the private plumbing without
+//! any of it becoming public API.
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ROOT};
-use autosurgeon::{hydrate, reconcile, Hydrate, Reconcile};
+use autosurgeon::{reconcile, Hydrate, Reconcile};
 use rusqlite::{params, Connection};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -26,7 +32,6 @@ use time::OffsetDateTime;
 use crate::content;
 use crate::note::{NoteDoc, NoteMetadata};
 use crate::search::{SearchError, SearchIndex};
-use crate::sync::TOMBSTONES_DOC_ID;
 
 /// The purge set as a CRDT: purged note id → true. Map entries only ever get
 /// added, so concurrent purges on different devices merge to the union.
@@ -44,7 +49,10 @@ fn empty_purged() -> HashMap<String, bool> {
     HashMap::new()
 }
 
+mod purge;
 mod queries;
+mod todos;
+mod write;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -409,366 +417,8 @@ impl NoteStore {
         self.mutate(id, |note| note.set_deleted(false))
     }
 
-    /// Permanently erase every trashed note: the rows (and their Automerge
-    /// documents) are deleted and each id is tombstoned in `purged`, so a
-    /// later sync receive from a peer that still holds the note cannot
-    /// resurrect it. Returns how many notes were erased.
-    pub fn purge_deleted(&mut self) -> Result<usize, StoreError> {
-        let ids: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT id FROM notes WHERE deleted = 1")?;
-            let rows = stmt.query_map([], |row| row.get(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        self.purge_ids(&ids)
-    }
-
-    /// Permanently erase a project: every note carrying `tag` — trashed ones
-    /// included — is deleted and tombstoned, exactly like
-    /// [`purge_deleted`](Self::purge_deleted). Returns how many notes were
-    /// erased. A note tagged into several projects is erased with the one
-    /// being deleted.
-    pub fn purge_tag(&mut self, tag: &str) -> Result<usize, StoreError> {
-        let ids: Vec<String> = {
-            let mut stmt = self.conn.prepare(
-                "SELECT id FROM notes
-                 WHERE EXISTS (SELECT 1 FROM json_each(notes.tags) WHERE json_each.value = ?1)",
-            )?;
-            let rows = stmt.query_map(params![tag], |row| row.get(0))?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        self.purge_ids(&ids)
-    }
-
-    /// Shared permanent-erase machinery for locally-initiated purges:
-    /// tombstone + delete the rows, and record the ids in the tombstone
-    /// document so the purge propagates to peers on the next sync.
-    fn purge_ids(&mut self, ids: &[String]) -> Result<usize, StoreError> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
-        let mut doc = self
-            .tombstone_doc_bytes()?
-            .map(|bytes| AutoCommit::load(&bytes).map_err(|e| document_err(TOMBSTONES_DOC_ID, e)))
-            .transpose()?
-            .unwrap_or_else(AutoCommit::new);
-        let mut set: TombstoneDoc =
-            hydrate(&doc).map_err(|e| document_err(TOMBSTONES_DOC_ID, e))?;
-        for id in ids {
-            set.purged.insert(id.clone(), true);
-        }
-        reconcile(&mut doc, &set).map_err(|e| document_err(TOMBSTONES_DOC_ID, e))?;
-        self.purge_rows(ids, &doc.save())
-    }
-
-    /// The purge set's CRDT document, for syncing under
-    /// [`TOMBSTONES_DOC_ID`](crate::sync::TOMBSTONES_DOC_ID). `None` until the
-    /// first purge anywhere in the mesh.
-    pub fn tombstone_doc_bytes(&self) -> Result<Option<Vec<u8>>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT doc FROM tombstone_doc WHERE id = 1")?;
-        let mut rows = stmt.query([])?;
-        Ok(rows.next()?.map(|row| row.get(0)).transpose()?)
-    }
-
-    /// Adopt a tombstone document that changed through sync: persist it and
-    /// apply every purge it lists locally (idempotent for ids already purged).
-    /// Returns how many notes this actually erased here.
-    pub fn adopt_tombstone_doc(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
-        let set: TombstoneDoc = hydrate(doc).map_err(|e| document_err(TOMBSTONES_DOC_ID, e))?;
-        let ids: Vec<String> = set.purged.into_keys().collect();
-        self.purge_rows(&ids, &doc.save())
-    }
-
-    /// Tombstone the ids, delete their rows, and persist the tombstone
-    /// document — one transaction — then drop any search-index entries.
-    /// Returns how many ids had a live row (i.e. were newly erased here).
-    fn purge_rows(&mut self, ids: &[String], doc_bytes: &[u8]) -> Result<usize, StoreError> {
-        let mut erased = 0;
-        let tx = self.conn.transaction()?;
-        for id in ids {
-            tx.execute("INSERT OR IGNORE INTO purged (id) VALUES (?1)", params![id])?;
-            erased += tx.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
-        }
-        tx.execute(
-            "INSERT OR REPLACE INTO tombstone_doc (id, doc) VALUES (1, ?1)",
-            params![doc_bytes],
-        )?;
-        tx.commit()?;
-        if let Some(index) = &mut self.search {
-            // Deferred, not immediate: a tombstone doc received mid-sync-burst
-            // runs while this store's own deferred writer is already open, and
-            // an immediate `remove_note` per id would burn the full writer-lock
-            // retry budget (~2s) against our own open writer, per id, inside
-            // the store mutex — 32 purged ids stalled sync for a measured 64+
-            // seconds (finding baf2d005). The deferred call reuses the open
-            // writer for free; the flush below keeps the local Empty Trash
-            // path as immediate as before.
-            for id in ids {
-                if let Err(e) = index.remove_note_deferred(id) {
-                    Self::log_index_failure(id, e);
-                    // Writer unavailable: skip the rest of the batch instead
-                    // of paying the retry budget per id. The index is derived
-                    // (these entries were already removed at trash time), so
-                    // missing removals cost nothing but staleness.
-                    break;
-                }
-            }
-            if let Err(e) = index.flush() {
-                eprintln!("kiem: search index flush after purge failed, will retry on next write: {e}");
-            }
-        }
-        Ok(erased)
-    }
-
-    /// Persist a document that changed outside the normal edit path (sync
-    /// receive). Inserts or fully replaces the row from the document's own
-    /// hydrated state and keeps the search index in step.
-    pub fn put_doc(&mut self, doc: &mut AutoCommit) -> Result<NoteMetadata, StoreError> {
-        self.put_doc_impl(doc, false)
-    }
-
-    /// Like `put_doc`, but defers the search-index write instead of
-    /// committing it immediately — for a caller applying many documents in
-    /// a burst (sync receiving a bulk resync), which would otherwise pay a
-    /// full tantivy commit+reload per document. The caller must eventually
-    /// call `flush_search_index` (the sync ticker does this once per tick);
-    /// until then the note is persisted and syncs correctly, it just isn't
-    /// searchable yet.
-    pub fn put_doc_deferred(&mut self, doc: &mut AutoCommit) -> Result<NoteMetadata, StoreError> {
-        self.put_doc_impl(doc, true)
-    }
-
-    fn put_doc_impl(&mut self, doc: &mut AutoCommit, defer_index: bool) -> Result<NoteMetadata, StoreError> {
-        let note: NoteDoc = hydrate(doc).map_err(|e| document_err("(sync)", e))?;
-        let m = &note.metadata;
-        // A purged id was permanently erased (Empty Trash): a peer that still
-        // holds the document must not resurrect it here. Accept-and-drop, so
-        // the sync session still converges from its point of view.
-        let purged: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM purged WHERE id = ?1)",
-            params![m.id],
-            |row| row.get(0),
-        )?;
-        if purged {
-            return Ok(note.metadata);
-        }
-        self.conn.execute(
-            "INSERT OR REPLACE INTO notes
-             (id, title, tags, author_did, note_type, pinned, deleted, has_todos, created_at, modified_at, doc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                m.id,
-                m.title,
-                tags_json(&m.tags),
-                m.author_did,
-                m.note_type,
-                m.pinned,
-                m.deleted,
-                content::has_unchecked_todos(note.body.as_str()),
-                m.created_at,
-                m.modified_at,
-                doc.save(),
-            ],
-        )?;
-        if let Some(index) = &mut self.search {
-            let result = match (m.deleted, defer_index) {
-                (true, true) => index.remove_note_deferred(&m.id),
-                (true, false) => index.remove_note(&m.id),
-                (false, true) => index.index_note_deferred(m, note.body.as_str()),
-                (false, false) => index.index_note(m, note.body.as_str()),
-            };
-            if let Err(e) = result {
-                Self::log_index_failure(&m.id, e);
-            }
-        }
-        Ok(note.metadata)
-    }
-
-    /// Commits any search-index writes deferred by `put_doc_deferred`. A
-    /// cheap no-op when nothing is pending.
-    pub fn flush_search_index(&mut self) -> Result<(), StoreError> {
-        if let Some(index) = &mut self.search {
-            index.flush()?;
-        }
-        Ok(())
-    }
-
-    /// Toggle one checkbox at `index` within note `id` and persist.
-    pub fn set_todo_checked(
-        &mut self,
-        id: &str,
-        index: usize,
-        checked: bool,
-    ) -> Result<NoteMetadata, StoreError> {
-        self.set_todos_checked(id, &[index], checked)
-    }
-
-    /// Toggle several checkbox positions in one sync-safe note update.
-    ///
-    /// Indices address all checkbox lines, including already checked ones, so
-    /// checking one item does not renumber the remaining positions. All indices
-    /// are applied to an in-memory body before persistence; an invalid index
-    /// leaves the note unchanged.
-    pub fn set_todos_checked(
-        &mut self,
-        id: &str,
-        indices: &[usize],
-        checked: bool,
-    ) -> Result<NoteMetadata, StoreError> {
-        let note = self
-            .get_note(id)?
-            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
-        let mut new_body = note.body.as_str().to_owned();
-        for &index in indices {
-            new_body = content::set_todo_checked(&new_body, index, checked)
-                .map_err(|e| document_err(id, e))?;
-        }
-        self.update_note(id, &new_body)
-    }
-
-    /// Replace the text of the todo at `index` within note `id` and persist.
-    /// Same sync-safe body-update path as [`Self::set_todo_checked`].
-    pub fn set_todo_text(
-        &mut self,
-        id: &str,
-        index: usize,
-        text: &str,
-    ) -> Result<NoteMetadata, StoreError> {
-        let note = self
-            .get_note(id)?
-            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
-        let new_body = content::set_todo_text(note.body.as_str(), index, text)
-            .map_err(|e| document_err(id, e))?;
-        self.update_note(id, &new_body)
-    }
-
-    /// Append a new unchecked todo to note `id` and persist. Goes through the
-    /// normal body-update path (title/tags/`modified_at` re-derive, splices into
-    /// the existing Automerge document), so it is sync-safe like an edit.
-    pub fn add_todo(&mut self, id: &str, text: &str) -> Result<NoteMetadata, StoreError> {
-        let note = self
-            .get_note(id)?
-            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
-        let new_body = content::append_todo(note.body.as_str(), text);
-        self.update_note(id, &new_body)
-    }
-
-    // -- internals --
-
-    /// Hydrate → mutate → reconcile into the *same* document, then persist.
-    /// The store owns the document for the whole cycle, the single-connection
-    /// equivalent of the U6 rule that edits and sync-receives serialize per
-    /// document (autosurgeon StaleHeads).
-    fn mutate(
-        &mut self,
-        id: &str,
-        change: impl FnOnce(&mut NoteDoc),
-    ) -> Result<NoteMetadata, StoreError> {
-        let mut doc = self
-            .load_doc(id)?
-            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
-        let mut note: NoteDoc = hydrate(&doc).map_err(|e| document_err(id, e))?;
-        change(&mut note);
-        reconcile(&mut doc, &note).map_err(|e| document_err(id, e))?;
-        self.persist(id, &mut doc, &note)?;
-        Ok(note.metadata)
-    }
-
-    /// Replace a note's body via a **scalar-indexed** Automerge text splice, then
-    /// re-derive metadata. This bypasses autosurgeon's `Text::update`, whose
-    /// byte-offset splice corrupts any body containing a multi-byte character
-    /// (see [`content::body_splice`]). Metadata reconciles normally — the body
-    /// object carries no autosurgeon edits, so `reconcile` leaves it untouched.
-    fn write_body(&mut self, id: &str, new_body: &str) -> Result<NoteMetadata, StoreError> {
-        self.write_body_inner(id, new_body, false)
-    }
-
-    fn write_body_inner(
-        &mut self,
-        id: &str,
-        new_body: &str,
-        allow_untagged: bool,
-    ) -> Result<NoteMetadata, StoreError> {
-        use automerge::transaction::Transactable;
-        let mut doc = self
-            .load_doc(id)?
-            .ok_or_else(|| StoreError::NotFound(id.to_owned()))?;
-        let (obj, old) = body_obj(&doc, id)?;
-        let (_, old_rest) = content::parse_frontmatter_status(&old);
-        let old_tags = content::extract_tags(old_rest);
-        let (status, new_rest) = content::parse_frontmatter_status(new_body);
-        let new_tags = content::extract_tags(new_rest);
-        if !allow_untagged && !old_tags.is_empty() && new_tags.is_empty() {
-            return Err(StoreError::TagsWouldBeLost {
-                id: id.to_owned(),
-                tags: old_tags,
-            });
-        }
-        if let Some(s) = content::body_splice(&old, new_body) {
-            doc.splice_text(&obj, s.pos, s.del as isize, &s.insert)
-                .map_err(|e| document_err(id, e))?;
-        }
-        let mut note: NoteDoc = hydrate(&doc).map_err(|e| document_err(id, e))?;
-        note.metadata.title = content::derive_title(new_rest);
-        note.metadata.tags = new_tags;
-        note.metadata.status = status;
-        note.metadata.modified_at = now_rfc3339();
-        reconcile(&mut doc, &note).map_err(|e| document_err(id, e))?;
-        self.persist(id, &mut doc, &note)?;
-        Ok(note.metadata)
-    }
-
-    /// Write the note's denormalized columns + saved document to SQLite and
-    /// refresh the search index. Shared by [`mutate`](Self::mutate) and
-    /// [`write_body`](Self::write_body).
-    fn persist(
-        &mut self,
-        _id: &str,
-        doc: &mut AutoCommit,
-        note: &NoteDoc,
-    ) -> Result<(), StoreError> {
-        let m = &note.metadata;
-        self.conn.execute(
-            "UPDATE notes SET title = ?2, tags = ?3, pinned = ?4, deleted = ?5,
-             has_todos = ?6, modified_at = ?7, note_type = ?8, status = ?9, doc = ?10 WHERE id = ?1",
-            params![
-                m.id,
-                m.title,
-                tags_json(&m.tags),
-                m.pinned,
-                m.deleted,
-                content::has_unchecked_todos(note.body.as_str()),
-                m.modified_at,
-                m.note_type,
-                m.status,
-                doc.save(),
-            ],
-        )?;
-        if let Some(index) = &mut self.search {
-            let result = if m.deleted {
-                index.remove_note(&m.id)
-            } else {
-                index.index_note(m, note.body.as_str())
-            };
-            if let Err(e) = result {
-                Self::log_index_failure(&m.id, e);
-            }
-        }
-        Ok(())
-    }
-
-    fn load_doc(&self, id: &str) -> Result<Option<AutoCommit>, StoreError> {
-        match self.get_doc_bytes(id)? {
-            None => Ok(None),
-            Some(b) => AutoCommit::load(&b)
-                .map(Some)
-                .map_err(|e| document_err(id, e)),
-        }
-    }
 }
+
 
 /// Add the `status` column to a pre-existing `notes` table that predates it.
 /// `CREATE TABLE IF NOT EXISTS` is a no-op against an already-existing table
