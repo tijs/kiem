@@ -55,13 +55,31 @@ export VERSION
 DMG="$("$ROOT_DIR/scripts/release/release.sh" | tail -n 1)"
 echo "Built: $DMG"
 
+# Release notes: this version's CHANGELOG section only. Passing the whole file
+# (what this did until 0.3.0) buries the new entries under every past release.
+NOTES="$(mktemp)"
+trap 'rm -f "$NOTES"' EXIT
+awk -v heading="## $VERSION " '
+  index($0, heading) == 1 { inside = 1; next }
+  inside && /^## / { exit }
+  inside { print }
+' "$ROOT_DIR/CHANGELOG.md" | sed -e '/./,$!d' > "$NOTES"
+
+if [[ ! -s "$NOTES" ]]; then
+  echo "error: CHANGELOG.md has no '## $VERSION' section." >&2
+  echo "       Move the Unreleased entries into one before releasing — the" >&2
+  echo "       release notes come from it." >&2
+  exit 1
+fi
+
 # Publish (or update) the GitHub release with the DMG + its checksum.
 if gh release view "$TAG" >/dev/null 2>&1; then
   gh release upload "$TAG" "$DMG" "$DMG.sha256" --clobber
+  gh release edit "$TAG" --notes-file "$NOTES"
 else
   gh release create "$TAG" "$DMG" "$DMG.sha256" \
     --title "Kiem $VERSION" \
     --prerelease \
-    --notes-file "$ROOT_DIR/CHANGELOG.md"
+    --notes-file "$NOTES"
 fi
 echo "Published $TAG"
