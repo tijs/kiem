@@ -5,7 +5,7 @@
 //! For that message to stay true the endpoints must not reach for anything
 //! beyond loopback; see `bind_loopback` and `warm_network_stack`.
 
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -303,6 +303,22 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(synced, "note did not sync over the first session");
+
+        // B holding the note is not yet agreement: A's shared heads only
+        // advance when B's reply lands. Disconnecting on the arrival of the
+        // note alone leaves A with nothing to resume *from*, and the claim
+        // below then fails for a reason that has nothing to do with
+        // `reset_peer`. Wait for the exchange to go quiet instead — the same
+        // settle-then-assert shape the idle-ticker test above uses.
+        let mut settled = noise.load(Ordering::SeqCst);
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let current = noise.load(Ordering::SeqCst);
+            if current == settled {
+                break;
+            }
+            settled = current;
+        }
 
         // Disconnect for real: both `run` calls return, so both run their
         // `reset_peer`. Awaiting the handles is what makes that ordering

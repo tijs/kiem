@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use iroh::EndpointId;
 
-pub const DEVICE_NAME_FILE: &str = "device-name";
-pub const PEER_NAMES_FILE: &str = "peer-names";
+pub(crate) const DEVICE_NAME_FILE: &str = "device-name";
+pub(crate) const PEER_NAMES_FILE: &str = "peer-names";
 
 /// The local device's display name, read from `data_dir/device-name`. Falls back
 /// to the OS host name; if even that fails, returns the bare peer id prefix.
@@ -46,7 +46,7 @@ pub fn peer_name(data_dir: &Path, peer_id: &EndpointId) -> Option<String> {
 }
 
 /// Remember a peer's display name. Empty names are ignored.
-pub fn set_peer_name(data_dir: &Path, peer_id: &EndpointId, name: &str) -> std::io::Result<()> {
+pub(crate) fn set_peer_name(data_dir: &Path, peer_id: &EndpointId, name: &str) -> std::io::Result<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Ok(());
@@ -57,7 +57,7 @@ pub fn set_peer_name(data_dir: &Path, peer_id: &EndpointId, name: &str) -> std::
 }
 
 /// Forget a peer's remembered name (part of unpairing). No-op if unknown.
-pub fn forget_peer_name(data_dir: &Path, peer_id: &EndpointId) -> std::io::Result<()> {
+pub(crate) fn forget_peer_name(data_dir: &Path, peer_id: &EndpointId) -> std::io::Result<()> {
     let mut map = peer_names(data_dir);
     if map.remove(&peer_id.to_string()).is_none() {
         return Ok(());

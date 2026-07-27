@@ -3,23 +3,32 @@
 //! keep me synced with my paired devices" — the CLI daemon and the Swift
 //! app's FFI bridge both drive one of these instead of each hand-rolling
 //! their own accept/dial loop around [`session::run`].
+//!
+//! This file owns the connection lifecycle. The three concerns around it live
+//! next door: [`gate`] decides who may connect (the trust boundary),
+//! [`pairing`] adds and removes peers without needing a mesh at all, and
+//! [`lock`] keeps two meshes off one data dir.
+
+mod gate;
+mod lock;
+mod pairing;
+
+pub use pairing::{forget, pair_add, pair_ticket};
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, TryLockError};
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use iroh::endpoint::Connection;
 
-use crate::names::{device_name, forget_peer_name, set_peer_name};
+use crate::names::{device_name, set_peer_name};
 use crate::peers::{self, KnownPeers, PeersError};
 use crate::session::{self, PeerHandshake, SessionError, SharedState};
 use crate::{endpoint, identity, Endpoint, EndpointAddr, EndpointId, IdentityError};
 
 pub const PEERS_FILE: &str = "known-peers";
-/// Advisory-locked for the life of a running `Mesh` — see `acquire_lock`.
-const LOCK_FILE: &str = "mesh.lock";
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(thiserror::Error, Debug)]
@@ -37,44 +46,6 @@ pub enum MeshError {
     AlreadyRunning { data_dir: String },
     #[error("locking {path}: {source}")]
     Lock { path: String, source: std::io::Error },
-}
-
-/// Exclusively locks `<data_dir>/mesh.lock` for the caller's lifetime — the
-/// file handle must be kept alive (e.g. on `Mesh`) for the lock to hold;
-/// dropping it releases the lock automatically. Guards the one hazard
-/// `Mesh::start`'s callers share: the CLI daemon and the app's FFI bridge
-/// both bind a mesh to the same on-disk identity, and running two at once
-/// means two accept/dial loops advertising the same `EndpointId`.
-fn acquire_lock(data_dir: &Path) -> Result<File, MeshError> {
-    // `Mesh::start` may be the very first thing run against a fresh data dir
-    // (e.g. `kiem pair add` before any note has ever been created) — this
-    // used to be created as a side effect of `identity::load_or_create`,
-    // which ran first; now that the lock is acquired first, it must create
-    // the dir itself instead of failing on a missing parent.
-    std::fs::create_dir_all(data_dir).map_err(|source| MeshError::Lock {
-        path: data_dir.display().to_string(),
-        source,
-    })?;
-    let path = data_dir.join(LOCK_FILE);
-    let file = File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|source| MeshError::Lock {
-            path: path.display().to_string(),
-            source,
-        })?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
-        Err(TryLockError::WouldBlock) => Err(MeshError::AlreadyRunning {
-            data_dir: data_dir.display().to_string(),
-        }),
-        Err(TryLockError::Error(source)) => Err(MeshError::Lock {
-            path: path.display().to_string(),
-            source,
-        }),
-    }
 }
 
 /// Notified as peers connect/disconnect. Default no-ops so a caller that only
@@ -104,7 +75,7 @@ impl MeshEvents for NoEvents {}
 
 pub struct Mesh {
     /// Held for the life of the mesh; never read, only kept alive so its
-    /// `Drop` releases the lock (see `acquire_lock`).
+    /// `Drop` releases the lock (see [`lock::acquire`]).
     _lock: File,
     endpoint: Endpoint,
     data_dir: PathBuf,
@@ -135,7 +106,7 @@ impl Mesh {
         interval: Duration,
         events: Arc<dyn MeshEvents>,
     ) -> Result<Arc<Mesh>, MeshError> {
-        let lock = acquire_lock(&data_dir)?;
+        let lock = lock::acquire(&data_dir)?;
         let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
         let endpoint = endpoint::bind(secret_key).await?;
         Self::assemble(lock, endpoint, data_dir, state, interval, events)
@@ -157,7 +128,7 @@ impl Mesh {
         interval: Duration,
         events: Arc<dyn MeshEvents>,
     ) -> Result<Arc<Mesh>, MeshError> {
-        let lock = acquire_lock(&data_dir)?;
+        let lock = lock::acquire(&data_dir)?;
         Self::assemble(lock, endpoint, data_dir, state, interval, events)
     }
 
@@ -209,7 +180,7 @@ impl Mesh {
     /// relay immediately instead of paying 20-35s of cold discovery (the
     /// df5ddfeb finding). Use this for a ticket shown to a user to pair with.
     pub async fn ticket_online(&self) -> String {
-        let _ = tokio::time::timeout(TICKET_RELAY_WAIT, self.endpoint.online()).await;
+        let _ = tokio::time::timeout(pairing::TICKET_RELAY_WAIT, self.endpoint.online()).await;
         self.ticket()
     }
 
@@ -251,61 +222,6 @@ impl Mesh {
     /// guarded loop / next startup; this is only the first-contact nudge.
     pub fn pair_dial(self: &Arc<Self>, addr: EndpointAddr) {
         tokio::spawn(pair_dial_once(self.clone(), addr));
-    }
-
-    /// Opens the single-use pairing window for `window`, during which one
-    /// unknown peer may connect and be trusted. Re-arming replaces any prior
-    /// deadline.
-    pub fn arm_pairing(&self, window: Duration) {
-        *self.pairing_until.lock().unwrap() = Some(Instant::now() + window);
-    }
-
-    /// Time left on the open pairing window, or `None` when closed/expired
-    /// (drives the app's countdown). Reading an expired window closes it.
-    pub fn pairing_window_remaining(&self) -> Option<Duration> {
-        let mut until = self.pairing_until.lock().unwrap();
-        match *until {
-            Some(deadline) => deadline.checked_duration_since(Instant::now()).or_else(|| {
-                *until = None;
-                None
-            }),
-            None => None,
-        }
-    }
-
-    /// Whether an incoming (accepted) connection from `peer` may proceed. Known
-    /// peers always do; an unknown peer is admitted only during an open pairing
-    /// window *and* an approved prompt, which then consumes the window (a denied
-    /// attempt leaves it open for the real device). `dialed` connections are
-    /// ours (we only ever dial peers we already trust), so they skip the gate.
-    ///
-    /// The window lock is never held across `approve_pairing` — that call can
-    /// block on a user prompt, and the countdown UI reads the window meanwhile.
-    fn admit_incoming(&self, peer: EndpointId, dialed: bool) -> bool {
-        if dialed || self.is_known(&peer) {
-            return true;
-        }
-        {
-            let mut until = self.pairing_until.lock().unwrap();
-            if !window_open(&mut until, Instant::now()) {
-                return false;
-            }
-        }
-        if !self.events.approve_pairing(peer) {
-            return false; // denied — leave the window open for the real device
-        }
-        // Approved: consume the window (single-use), re-checking it didn't lapse
-        // while the prompt was up.
-        let mut until = self.pairing_until.lock().unwrap();
-        let admit = window_open(&mut until, Instant::now());
-        *until = None;
-        admit
-    }
-
-    fn is_known(&self, peer: &EndpointId) -> bool {
-        KnownPeers::load(&self.data_dir.join(PEERS_FILE))
-            .map(|known| known.contains(peer))
-            .unwrap_or(false)
     }
 
     /// The pairing handshake for one connection: our own ticket to send, and a
@@ -480,124 +396,4 @@ async fn handle_connection(
     mesh.connected.lock().unwrap().remove(&peer);
     mesh.events.on_disconnected(peer);
     result
-}
-
-/// How long ticket generation waits for relay registration before settling
-/// for a relay-less ticket (an offline machine must still be able to pair).
-const TICKET_RELAY_WAIT: Duration = Duration::from_secs(10);
-
-/// This device's shareable ticket, without needing a `Mesh` already running
-/// (a fresh device pairs before it has ever synced). Binds a short-lived
-/// endpoint and waits for relay registration first: an address read straight
-/// after bind carries no relay URL, which forces the peer to dial by bare
-/// EndpointId — 20–35s of cold discovery (the df5ddfeb finding). With the
-/// relay hint in the ticket, the first connect goes through the relay
-/// immediately and upgrades to direct.
-pub async fn pair_ticket(data_dir: &Path) -> Result<String, MeshError> {
-    let secret_key = identity::load_or_create(&data_dir.join(identity::IDENTITY_FILE))?;
-    let endpoint = endpoint::bind(secret_key).await?;
-    let _ = tokio::time::timeout(TICKET_RELAY_WAIT, endpoint.online()).await;
-    let ticket = peers::my_ticket(&endpoint).to_string();
-    endpoint.close().await;
-    Ok(ticket)
-}
-
-/// Trusts the device behind a pasted/scanned ticket, persisting it to the
-/// known-peers file. Does not require a `Mesh` to be running. Returns the
-/// full address (not just the id) so a caller can dial it immediately via
-/// [`Mesh::dial`].
-pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointAddr, MeshError> {
-    let addr = peers::parse_ticket(ticket)?;
-    let peers_path = data_dir.join(PEERS_FILE);
-    let mut known = KnownPeers::load(&peers_path)?;
-    known.add(&peers_path, addr.clone())?;
-    Ok(addr)
-}
-
-/// Unpairs a device without needing a `Mesh` to be running: drops it from the
-/// known-peers file, forgets its remembered name, and drops its sync state
-/// (which is what stops a long-lived process holding a discarded device's
-/// per-document states — see [`SyncEngine::forget_peer`]). Returns whether it
-/// was a known peer.
-///
-/// Callers that *do* have a mesh should use [`Mesh::forget_peer`], which also
-/// closes the live connection.
-///
-/// [`SyncEngine::forget_peer`]: kiem_core::sync::SyncEngine::forget_peer
-pub fn forget(
-    data_dir: &Path,
-    state: &SharedState,
-    peer: &EndpointId,
-) -> Result<bool, MeshError> {
-    let peers_path = data_dir.join(PEERS_FILE);
-    let mut known = KnownPeers::load(&peers_path)?;
-    let was_known = known.remove(&peers_path, peer)?;
-    // Best-effort: a stale display name is cosmetic, and failing the unpair
-    // over it would leave the device trusted, which is the part that matters.
-    let _ = forget_peer_name(data_dir, peer);
-    state.lock().1.forget_peer(&peer.to_string());
-    Ok(was_known)
-}
-
-/// Is the pairing window open at `now`? Clears an expired deadline in place.
-/// Pure — the gate's window check has to be right (it's the trust boundary), so
-/// it's tested without needing a live endpoint. It does *not* consume an open
-/// window; only an approved pairing does (see `admit_incoming`).
-fn window_open(window: &mut Option<Instant>, now: Instant) -> bool {
-    match *window {
-        Some(deadline) if now < deadline => true,
-        _ => {
-            *window = None;
-            false
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn window_open_is_true_only_within_the_deadline_and_clears_when_lapsed() {
-        let now = Instant::now();
-
-        // Open: true, and left open (checking doesn't consume it — a denied
-        // pairing must leave the window for the real device).
-        let mut open = Some(now + Duration::from_secs(60));
-        assert!(window_open(&mut open, now));
-        assert!(open.is_some(), "checking an open window must not close it");
-
-        // Closed: false.
-        let mut closed = None;
-        assert!(!window_open(&mut closed, now));
-
-        // Expired: false, and cleared in place.
-        let mut expired = Some(now - Duration::from_secs(1));
-        assert!(!window_open(&mut expired, now));
-        assert!(expired.is_none(), "an expired window must be cleared");
-    }
-
-    #[test]
-    fn acquire_lock_refuses_a_second_holder_until_the_first_is_dropped() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let first = acquire_lock(dir.path()).expect("first lock should succeed");
-        match acquire_lock(dir.path()) {
-            Err(MeshError::AlreadyRunning { .. }) => {}
-            other => panic!("expected AlreadyRunning while first lock is held, got {other:?}"),
-        }
-
-        drop(first);
-        acquire_lock(dir.path()).expect("lock should be free again after the holder drops");
-    }
-
-    #[test]
-    fn acquire_lock_creates_a_data_dir_that_does_not_exist_yet() {
-        let root = tempfile::tempdir().unwrap();
-        let fresh = root.path().join("never-created").join("nested");
-
-        acquire_lock(&fresh).expect("should create the data dir, not require it to pre-exist");
-
-        assert!(fresh.is_dir());
-    }
 }
