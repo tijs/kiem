@@ -1,9 +1,13 @@
 name: Release
 
+# Manual only, on purpose. Releases are normally cut locally with
+# `scripts/release/release-local.sh` — this runs on `macos-26`, which bills at
+# a 10x minute multiplier, and the account's Actions credit refreshes monthly.
+# Every tag push from v0.1.0-alpha.15 to v0.3.0 was rejected before the job
+# started ("spending limit needs to be increased"), so a `push: tags` trigger
+# only ever posted a red X against the release commit while the real release
+# was being built on a laptop. Dispatch this when there is credit to spend.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       version:

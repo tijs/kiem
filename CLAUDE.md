@@ -25,9 +25,16 @@ the iroh migration). Remaining roadmap units — tracked in the Kiem "Roadmap" n
 (U13), full CLI flags (U14), MCP (U15), skills setup (U16), and the iOS Pulp port.
 
 **Toolchain baseline (since v0.1.0-alpha.11):** macOS 26 deployment target, Swift 6
-language mode, Pulp is TextKit 2-native. Releases build on the `macos-26` runner and
-check out Pulp at the commit pinned in `pulp.ref` — bump that file (and push pulp main)
-whenever a release should pick up new Pulp work.
+language mode, Pulp is TextKit 2-native.
+
+**Releases are cut locally**, with `scripts/release/release-local.sh <version>` (build,
+sign, notarize, publish). The GitHub workflow does the same on a `macos-26` runner but
+is manual-dispatch only: that runner bills at 10x and this account's Actions credit
+refreshes monthly, so every tag-triggered run from v0.1.0-alpha.15 on was rejected
+before it started. Either path builds Pulp at the commit pinned in `pulp.ref` (the
+script refuses to run if `../pulp` has drifted) — bump that file, and push pulp main,
+whenever a release should pick up new Pulp work. Full checklist:
+`scripts/release/README.md`.
 
 ## Commands
 

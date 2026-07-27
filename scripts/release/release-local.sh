@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# Cut a release from this machine instead of the GitHub runner (e.g. when
-# runner minutes are exhausted). Does what .github/workflows/release.yml does,
-# minus the throwaway-keychain/cert-import dance — your login keychain already
-# holds the Developer ID cert, and notarization uses a stored notarytool
-# profile instead of the API key from GitHub secrets.
+# Cut a release from this machine. **This is the normal path** — the GitHub
+# workflow runs on macos-26 at a 10x minute multiplier and this account's
+# Actions credit refreshes monthly, so it is dispatch-only fallback.
+#
+# Does what .github/workflows/release.yml does, minus the
+# throwaway-keychain/cert-import dance — your login keychain already holds the
+# Developer ID cert, and notarization uses a stored notarytool profile instead
+# of the API key from GitHub secrets.
 #
 # One-time notarization setup (uses the same App Store Connect .p8 key that
 # scripts/release/setup-github-secrets.sh pushed to GitHub):

@@ -4,37 +4,53 @@ A release builds the macOS app, signs it with the Developer ID identity,
 notarizes + staples the DMG, and publishes a GitHub prerelease with the DMG and
 its SHA-256.
 
-## Normal path — GitHub Actions (recommended)
-
-Bump versions, then push a tag. The workflow (`.github/workflows/release.yml`,
-`macos-26` runner) does the rest.
+## Normal path — build on this machine
 
 ```bash
-# 1. Bump: crates/*/Cargo.toml, apple/project.yml CURRENT_PROJECT_VERSION,
-#    CHANGELOG.md. Rebuild Cargo.lock (cargo build). Bump pulp.ref if the
-#    release should pick up new Pulp work (and push pulp main first).
+# 1. Bump: crates/*/Cargo.toml, apple/project.yml MARKETING_VERSION +
+#    CURRENT_PROJECT_VERSION, CHANGELOG.md (move Unreleased into a dated
+#    section). Rebuild Cargo.lock (cargo check --workspace). Bump pulp.ref if
+#    the release should pick up new Pulp work (and push pulp main first).
 # 2. Commit, tag, push:
-git tag v0.1.0-alpha.13
+git commit -am "chore: release 0.3.0"
+git tag v0.3.0
 git push origin main --tags
-```
-
-## Local path — build on this machine
-
-Use when GitHub runner minutes are exhausted. Same scripts, run locally; this
-machine must be on the current Xcode/macOS generation (matches the `macos-26`
-runner) with `../pulp` checked out at the commit in `pulp.ref`.
-
-```bash
-scripts/release/release-local.sh 0.1.0-alpha.13
+# 3. Build, notarize and publish:
+scripts/release/release-local.sh 0.3.0
 ```
 
 That runs `archive.sh` → `package-dmg.sh` → `notarize.sh`, then
-`gh release create`. To smoke-test the build without notarizing (the app will
-trip Gatekeeper on other Macs):
+`gh release create`. It refuses to start if `../pulp` is not at the commit
+`pulp.ref` pins, so a release can never silently bake in local Pulp edits.
+
+To smoke-test the build without notarizing (the app will trip Gatekeeper on
+other Macs):
 
 ```bash
-SKIP_NOTARIZATION=1 scripts/release/release-local.sh 0.1.0-alpha.13
+SKIP_NOTARIZATION=1 scripts/release/release-local.sh 0.3.0
 ```
+
+This machine has to be on the current Xcode/macOS generation — the same one the
+`macos-26` runner uses — because dev builds only ever run against the current
+SDK.
+
+## Fallback path — GitHub Actions
+
+`.github/workflows/release.yml` does the same work on a `macos-26` runner. It
+is **manual dispatch only**, not tag-triggered:
+
+```bash
+gh workflow run release.yml -f version=0.3.0
+```
+
+The runner bills at a 10x minute multiplier and this account's Actions credit
+refreshes monthly, so in practice it is rarely the cheaper option. Every tag
+push from `v0.1.0-alpha.15` through `v0.3.0` was rejected before the job even
+started ("recent account payments have failed or your spending limit needs to
+be increased") — the DMGs on all of those releases were built locally. The tag
+trigger was removed because its only remaining effect was a red X on the
+release commit. Use this when there is credit to spend, or when releasing from
+a machine that cannot sign.
 
 ### One-time local setup
 
@@ -58,9 +74,9 @@ SKIP_NOTARIZATION=1 scripts/release/release-local.sh 0.1.0-alpha.13
 
 | Script | Role |
 |---|---|
-| `release-local.sh` | Local end-to-end: build + notarize + publish (replaces the CI job). |
-| `release.sh` | Build + package + notarize (no publish). CI and `release-local.sh` both call it. |
+| `release-local.sh` | The release. Build + notarize + publish, end to end. |
+| `release.sh` | Build + package + notarize (no publish). `release-local.sh` and the CI job both call it. |
 | `archive.sh` | Regenerates KiemKit, `xcodegen`, archives, exports, signs the app + embedded CLI. |
 | `package-dmg.sh` | Wraps the `.app` in a DMG + checksum. |
 | `notarize.sh` | Submits to Apple, staples, re-checksums. Uses `NOTARY_KEYCHAIN_PROFILE`. |
-| `setup-github-secrets.sh` | One-time: pushes signing/notary secrets to GitHub for the CI path. |
+| `setup-github-secrets.sh` | One-time: pushes signing/notary secrets to GitHub for the fallback path. |
