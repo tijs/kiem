@@ -19,7 +19,7 @@ struct NoteListView: View {
         ("decision", "Decisions"),
         ("solution", "Solutions"),
         ("doc", "Docs"),
-        ("note", "Notes"),
+        ("note", "Notes")
     ]
 
     var body: some View {

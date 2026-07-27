@@ -45,7 +45,7 @@ struct ContentView: View {
             ),
             titleVisibility: .visible,
             presenting: model.pairingRequest
-        ) { request in
+        ) { _ in
             Button("Allow") { model.resolvePairing(true) }
             Button("Don’t Allow", role: .cancel) { model.resolvePairing(false) }
         } message: { request in
