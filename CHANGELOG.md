@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-27
+
 - Added: you can unpair a device you no longer have. Settings → Sync → Paired devices now has a Forget button on each device (with a confirmation), and the CLI has `kiem pair list` and `kiem pair forget <peer-id>`. A forgotten device stops syncing immediately — the live connection closes, it can no longer connect in either direction, and its name and sync state are dropped. Notes it already sent stay; pairing it again later is a normal fresh pairing.
 - Changed: reconnecting to a paired device after the connection drops now resumes from where the two devices last agreed, instead of re-negotiating every note from scratch. Sync state was discarded outright on every disconnect, on the assumption that a fresh handshake is cheap — on a store with hundreds of notes it is not, because each note's opening message then has to summarise that note's entire history. What survives a disconnect is now exactly what the sync library defines as safe to reuse; a device that genuinely lost its copy still starts over, as before.
 
