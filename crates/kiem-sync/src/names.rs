@@ -56,6 +56,15 @@ pub fn set_peer_name(data_dir: &Path, peer_id: &EndpointId, name: &str) -> std::
     save_peer_names(data_dir, &map)
 }
 
+/// Forget a peer's remembered name (part of unpairing). No-op if unknown.
+pub fn forget_peer_name(data_dir: &Path, peer_id: &EndpointId) -> std::io::Result<()> {
+    let mut map = peer_names(data_dir);
+    if map.remove(&peer_id.to_string()).is_none() {
+        return Ok(());
+    }
+    save_peer_names(data_dir, &map)
+}
+
 fn peer_names_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PEER_NAMES_FILE)
 }
@@ -99,6 +108,21 @@ mod tests {
             peer_name(dir.path(), &peer_id),
             Some("Other Mac".to_owned())
         );
+    }
+
+    #[test]
+    fn forgetting_a_peer_name_removes_only_that_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gone, kept) = (SecretKey::generate().public(), SecretKey::generate().public());
+        set_peer_name(dir.path(), &gone, "Old Mac").unwrap();
+        set_peer_name(dir.path(), &kept, "Other Mac").unwrap();
+
+        forget_peer_name(dir.path(), &gone).unwrap();
+
+        assert_eq!(peer_name(dir.path(), &gone), None);
+        assert_eq!(peer_name(dir.path(), &kept), Some("Other Mac".to_owned()));
+        // Unknown peer: no-op, not an error.
+        forget_peer_name(dir.path(), &gone).unwrap();
     }
 
     #[test]

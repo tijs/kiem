@@ -146,6 +146,111 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
     );
 }
 
+/// Unpairing is pairing's inverse and has to hold on a *live* mesh: forgetting
+/// a device must stop the sync that is happening right now, not just edit a
+/// file that takes effect on the next launch.
+///
+/// The negative (B's later note never arrives) is only meaningful because the
+/// test first proves the two were genuinely syncing — the vacuity trap this
+/// suite has been bitten by before.
+#[tokio::test]
+async fn forgetting_a_device_stops_syncing_with_it() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    // A is deliberately the smaller EndpointId, so A is the side running the
+    // guarded dial loop (see `dial_loop`) — the loop unpairing has to stop.
+    // Left to chance, half the runs would put that loop on B and never
+    // exercise it. B being refused at A's gate is the other half of the story
+    // and is already covered by the denied-pairing test.
+    let (ep_a, ep_b) = {
+        let (x, y) = (common::bind_loopback().await, common::bind_loopback().await);
+        if x.id() < y.id() {
+            (x, y)
+        } else {
+            (y, x)
+        }
+    };
+    let outcome = tokio::time::timeout(Duration::from_secs(60), async {
+        let state_a = state_with_note();
+        let state_b = empty_state();
+
+        let mesh_b = Mesh::start_with_endpoint(
+            ep_b,
+            dir_b.path().into(),
+            state_b.clone(),
+            INTERVAL,
+            Arc::new(ApproveAll),
+        )
+        .await
+        .unwrap();
+        let mesh_a = Mesh::start_with_endpoint(
+            ep_a,
+            dir_a.path().into(),
+            state_a.clone(),
+            INTERVAL,
+            Arc::new(NoEvents),
+        )
+        .await
+        .unwrap();
+        let b_id = mesh_b.endpoint_id();
+
+        mesh_b.arm_pairing(Duration::from_secs(60));
+        mesh_a.pair_dial(kiem_sync::parse_ticket(&mesh_b.ticket()).unwrap());
+
+        // Precondition: they really are paired and syncing.
+        let mut synced = false;
+        for _ in 0..300 {
+            if state_b.lock().0.get_note("n1").unwrap().is_some() {
+                synced = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(synced, "the two never paired, so forgetting proves nothing");
+        assert!(knows(dir_a.path(), &b_id), "A did not record B");
+
+        assert!(
+            mesh_a.forget_peer(&b_id).unwrap(),
+            "forget_peer should report B as a known peer"
+        );
+        assert!(
+            !knows(dir_a.path(), &b_id),
+            "B is still in A's trust list after being forgotten"
+        );
+
+        // B writes a note it would have synced a second ago.
+        state_b
+            .lock()
+            .0
+            .insert_note(&NoteDoc::new_with(
+                "n2".into(),
+                "# After unpairing",
+                "did:b",
+                TS.into(),
+            ))
+            .unwrap();
+
+        // Well past RECONNECT_DELAY: long enough that a dial loop that ignored
+        // the unpair, or a gate that admitted B back, would have resynced.
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(
+                state_a.lock().0.get_note("n2").unwrap().is_none(),
+                "a forgotten device is still syncing to us"
+            );
+        }
+        assert!(
+            !mesh_a.connected_ids().contains(&b_id),
+            "the session with the forgotten device is still open"
+        );
+    })
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "timed out — likely no local networking in this environment"
+    );
+}
+
 /// A denied pairing (default-deny approval) trusts nobody and — crucially —
 /// leaves the window open, so the real device can still pair.
 #[tokio::test]

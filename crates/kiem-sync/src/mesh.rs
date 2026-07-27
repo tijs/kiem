@@ -4,7 +4,7 @@
 //! app's FFI bridge both drive one of these instead of each hand-rolling
 //! their own accept/dial loop around [`session::run`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use iroh::endpoint::Connection;
 
-use crate::names::{device_name, set_peer_name};
+use crate::names::{device_name, forget_peer_name, set_peer_name};
 use crate::peers::{self, KnownPeers, PeersError};
 use crate::session::{self, PeerHandshake, SessionError, SharedState};
 use crate::{endpoint, identity, Endpoint, EndpointAddr, EndpointId, IdentityError};
@@ -109,7 +109,10 @@ pub struct Mesh {
     endpoint: Endpoint,
     data_dir: PathBuf,
     state: SharedState,
-    connected: Mutex<HashSet<EndpointId>>,
+    /// Live sessions, keyed by peer. The `Connection` is kept (not just the
+    /// id) so unpairing can close the link immediately instead of leaving a
+    /// discarded device syncing until it happens to drop.
+    connected: Mutex<HashMap<EndpointId, Connection>>,
     interval: Duration,
     events: Arc<dyn MeshEvents>,
     /// Peers with a live guarded dial loop, so we start exactly one per peer
@@ -173,7 +176,7 @@ impl Mesh {
             endpoint,
             data_dir,
             state,
-            connected: Mutex::new(HashSet::new()),
+            connected: Mutex::new(HashMap::new()),
             interval,
             events,
             dialing: Mutex::new(HashSet::new()),
@@ -211,7 +214,23 @@ impl Mesh {
     }
 
     pub fn connected_ids(&self) -> Vec<EndpointId> {
-        self.connected.lock().unwrap().iter().copied().collect()
+        self.connected.lock().unwrap().keys().copied().collect()
+    }
+
+    /// Unpairs a device: drops it from the trust list and from this mesh's
+    /// live state, and closes any session with it right now. Returns whether
+    /// it was a known peer.
+    ///
+    /// Order matters. The trust list is written *first*, so by the time the
+    /// connection closes the peer is already untrusted: its dial loop stops
+    /// (see [`dial_loop`]) instead of reconnecting two seconds later, and an
+    /// incoming dial from it is refused by the gate in [`admit_incoming`].
+    pub fn forget_peer(&self, peer: &EndpointId) -> Result<bool, MeshError> {
+        let known = forget(&self.data_dir, &self.state, peer)?;
+        if let Some(connection) = self.connected.lock().unwrap().remove(peer) {
+            connection.close(0u32.into(), b"unpaired");
+        }
+        Ok(known)
     }
 
     /// Starts (at most one) guarded dial loop for a peer — reconnects it for the
@@ -385,7 +404,15 @@ async fn dial_loop(mesh: Arc<Mesh>, addr: EndpointAddr) {
         return;
     }
     loop {
-        if !mesh.connected.lock().unwrap().contains(&id) {
+        // Unpairing is the loop's only exit: without this it would redial a
+        // forgotten device every two seconds forever. Reading the trust list
+        // (rather than a flag) also catches an unpair done by another process
+        // — `kiem pair forget` while the app holds the mesh.
+        if !mesh.is_known(&id) {
+            mesh.dialing.lock().unwrap().remove(&id);
+            return;
+        }
+        if !mesh.connected.lock().unwrap().contains_key(&id) {
             match endpoint::connect(&mesh.endpoint, addr.clone()).await {
                 Ok(connection) => {
                     if let Err(err) = handle_connection(mesh.clone(), connection, true).await {
@@ -403,7 +430,7 @@ async fn dial_loop(mesh: Arc<Mesh>, addr: EndpointAddr) {
 /// [`Mesh::pair_dial`].
 async fn pair_dial_once(mesh: Arc<Mesh>, addr: EndpointAddr) {
     let id = addr.id;
-    if mesh.connected.lock().unwrap().contains(&id) {
+    if mesh.connected.lock().unwrap().contains_key(&id) {
         return; // the guarded loop already linked this peer
     }
     match endpoint::connect(&mesh.endpoint, addr).await {
@@ -434,8 +461,12 @@ async fn handle_connection(
     if !admit {
         return Ok(());
     }
-    if !mesh.connected.lock().unwrap().insert(peer) {
-        return Ok(()); // already linked to this peer (a dial/accept race)
+    {
+        let mut connected = mesh.connected.lock().unwrap();
+        if connected.contains_key(&peer) {
+            return Ok(()); // already linked to this peer (a dial/accept race)
+        }
+        connected.insert(peer, connection.clone());
     }
     mesh.events.on_connected(peer);
     let result = session::run(
@@ -481,6 +512,31 @@ pub fn pair_add(data_dir: &Path, ticket: &str) -> Result<EndpointAddr, MeshError
     let mut known = KnownPeers::load(&peers_path)?;
     known.add(&peers_path, addr.clone())?;
     Ok(addr)
+}
+
+/// Unpairs a device without needing a `Mesh` to be running: drops it from the
+/// known-peers file, forgets its remembered name, and drops its sync state
+/// (which is what stops a long-lived process holding a discarded device's
+/// per-document states — see [`SyncEngine::forget_peer`]). Returns whether it
+/// was a known peer.
+///
+/// Callers that *do* have a mesh should use [`Mesh::forget_peer`], which also
+/// closes the live connection.
+///
+/// [`SyncEngine::forget_peer`]: kiem_core::sync::SyncEngine::forget_peer
+pub fn forget(
+    data_dir: &Path,
+    state: &SharedState,
+    peer: &EndpointId,
+) -> Result<bool, MeshError> {
+    let peers_path = data_dir.join(PEERS_FILE);
+    let mut known = KnownPeers::load(&peers_path)?;
+    let was_known = known.remove(&peers_path, peer)?;
+    // Best-effort: a stale display name is cosmetic, and failing the unpair
+    // over it would leave the device trusted, which is the part that matters.
+    let _ = forget_peer_name(data_dir, peer);
+    state.lock().1.forget_peer(&peer.to_string());
+    Ok(was_known)
 }
 
 /// Is the pairing window open at `now`? Clears an expired deadline in place.

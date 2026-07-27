@@ -418,6 +418,23 @@ impl KiemStore {
         Ok(id.to_string())
     }
 
+    /// Unpairs a device — for a machine you no longer have. Drops it from the
+    /// trust list (so it can neither dial in nor be dialed), forgets its name
+    /// and its sync state, and closes any live session with it. Returns
+    /// whether it was a known peer.
+    ///
+    /// Re-pairing later is a normal fresh pairing: nothing about the old link
+    /// is kept, so the first sync after it re-handshakes from scratch.
+    pub fn forget_known_peer(&self, peer_id: String) -> Result<bool, KiemError> {
+        let id = peer_id.parse().map_err(|_| KiemError::Sync {
+            message: format!("not a valid peer id: {peer_id}"),
+        })?;
+        match self.sync.lock().expect("sync lock poisoned").as_ref() {
+            Some(handle) => handle.mesh.forget_peer(&id).map_err(sync_err),
+            None => kiem_sync::forget(&self.data_dir, &self.state, &id).map_err(sync_err),
+        }
+    }
+
     /// Ids of every paired device (the known-peers file), whether or not it
     /// is currently reachable — the denominator for the sync-status UI.
     pub fn known_peers(&self) -> Result<Vec<String>, KiemError> {

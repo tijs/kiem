@@ -63,6 +63,10 @@ fn run() -> Result<()> {
                 PairAction::Add { ticket } => {
                     runtime.block_on(pair::add(&data_dir, &ticket, cli.json))
                 }
+                PairAction::List => pair::list(&data_dir, cli.json),
+                PairAction::Forget { peer_id } => {
+                    runtime.block_on(pair::forget(&data_dir, &peer_id, cli.json))
+                }
             };
         }
         _ => {}

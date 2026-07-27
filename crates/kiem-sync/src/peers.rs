@@ -80,6 +80,19 @@ impl KnownPeers {
         self.save(path)
     }
 
+    /// Drops a peer from the trust list and persists it. Returns whether it
+    /// was there — `false` lets a caller report "not a paired device" instead
+    /// of silently succeeding on a typo'd id.
+    pub fn remove(&mut self, path: &Path, id: &EndpointId) -> Result<bool, PeersError> {
+        let before = self.addrs.len();
+        self.addrs.retain(|a| &a.id != id);
+        if self.addrs.len() == before {
+            return Ok(false);
+        }
+        self.save(path)?;
+        Ok(true)
+    }
+
     fn save(&self, path: &Path) -> Result<(), PeersError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| PeersError::Write {
@@ -152,6 +165,33 @@ mod tests {
     #[test]
     fn rejects_a_garbage_ticket_without_panicking() {
         assert!(parse_ticket("not a ticket").is_err());
+    }
+
+    #[test]
+    fn removing_a_peer_persists_and_reports_whether_it_was_known() {
+        let dir = tempfile::tempdir().unwrap();
+        let peers_path = dir.path().join("known-peers");
+
+        let (kept, dropped) = (
+            EndpointAddr::from(iroh::SecretKey::generate().public()),
+            EndpointAddr::from(iroh::SecretKey::generate().public()),
+        );
+        let (kept_id, dropped_id) = (kept.id, dropped.id);
+        let mut peers = KnownPeers::load(&peers_path).unwrap();
+        peers.add(&peers_path, kept).unwrap();
+        peers.add(&peers_path, dropped).unwrap();
+
+        assert!(peers.remove(&peers_path, &dropped_id).unwrap());
+        assert!(
+            !peers.remove(&peers_path, &dropped_id).unwrap(),
+            "removing an unknown peer should report false, not succeed silently"
+        );
+
+        // The removal has to survive the process, not just this instance —
+        // otherwise the peer is trusted again on the next launch.
+        let reloaded = KnownPeers::load(&peers_path).unwrap();
+        assert!(!reloaded.contains(&dropped_id));
+        assert!(reloaded.contains(&kept_id), "removal took the wrong peer");
     }
 
     #[test]

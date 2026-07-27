@@ -30,6 +30,8 @@ pub enum Request {
     Show { window_secs: u64 },
     /// Trust a pasted ticket and dial it now.
     Add { ticket: String },
+    /// Unpair a device: drop its trust, state and live connection.
+    Forget { peer_id: String },
     /// The user's answer to an `Approve` push.
     Allow(bool),
 }
@@ -46,6 +48,8 @@ pub enum Response {
     Paired(String),
     /// `Add` recorded the peer (dialing continues in the background).
     Added(String),
+    /// `Forget` is done; `known` is false if the peer wasn't paired.
+    Forgotten { known: bool },
     Error(String),
 }
 
@@ -199,6 +203,18 @@ async fn handle_client(
                 return Ok(());
             }
         },
+        // One-shot, unlike Show/Add: there is no pairing to wait for.
+        Ok(Request::Forget { peer_id }) => {
+            let response = match peer_id.parse() {
+                Ok(peer) => match mesh.forget_peer(&peer) {
+                    Ok(known) => Response::Forgotten { known },
+                    Err(err) => Response::Error(err.to_string()),
+                },
+                Err(_) => Response::Error(format!("not a peer id: {peer_id}")),
+            };
+            send_line(&mut write, &response).await?;
+            return Ok(());
+        }
         Ok(Request::Allow(_)) | Err(_) => {
             send_line(
                 &mut write,

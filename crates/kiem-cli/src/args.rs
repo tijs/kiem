@@ -221,6 +221,11 @@ pub enum PairAction {
     },
     /// Trust the device behind a pasted/scanned code and connect to it now
     Add { ticket: String },
+    /// List paired devices and their ids
+    List,
+    /// Unpair a device you no longer have: stop syncing with it and drop its
+    /// sync state (ids come from `kiem pair list`)
+    Forget { peer_id: String },
 }
 
 #[derive(Subcommand)]

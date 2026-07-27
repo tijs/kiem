@@ -293,6 +293,28 @@ final class KiemModel {
         }
     }
 
+    /// Unpairs a device — for a machine you no longer have. The Rust core drops
+    /// it from the trust list (so it can neither dial in nor be dialed), forgets
+    /// its name and sync state, and closes any live session. Notes already
+    /// synced from it stay; only the link goes.
+    func forgetDevice(peerId: String) {
+        let store = self.store
+        Task.detached {
+            do {
+                _ = try store.forgetKnownPeer(peerId: peerId)
+                await MainActor.run {
+                    self.knownPeers = (try? self.store.knownPeers()) ?? []
+                    self.connectedPeers.removeAll { $0 == peerId }
+                    self.lastSyncActivity[peerId] = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Couldn't unpair that device: \(error)"
+                }
+            }
+        }
+    }
+
     /// Best-known display name for a peer id; falls back to the id itself.
     func peerName(for peerId: String) -> String {
         store.peerName(peerId: peerId)

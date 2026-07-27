@@ -12,6 +12,8 @@ struct SyncSettingsView: View {
     @State private var pastedTicket = ""
     @State private var editingDeviceName = ""
     @State private var isEditingDeviceName = false
+    /// The peer awaiting an unpair confirmation, if any.
+    @State private var peerToForget: String?
     /// Ticked every second so `peerRow` re-renders and `isSyncing` relaxes to
     /// "Connected" once `syncingTimeout` has passed — nothing else about the
     /// peer state changes purely from time passing.
@@ -55,6 +57,19 @@ struct SyncSettingsView: View {
         }
         .onAppear { model.armPairingWindow() }
         .onDisappear { model.closePairingWindow() }
+        .confirmationDialog(
+            "Forget this device?",
+            isPresented: Binding(get: { peerToForget != nil }, set: { if !$0 { peerToForget = nil } }),
+            presenting: peerToForget
+        ) { peerId in
+            Button("Forget Device", role: .destructive) {
+                model.forgetDevice(peerId: peerId)
+                peerToForget = nil
+            }
+            Button("Cancel", role: .cancel) { peerToForget = nil }
+        } message: { _ in
+            forgetConfirmation
+        }
         .onReceive(tick) { date in
             now = date
             if mode == .show { model.refreshPairingWindow() }
@@ -131,8 +146,19 @@ struct SyncSettingsView: View {
                 Image(systemName: connected ? "checkmark.circle.fill" : "circle.dashed")
                     .foregroundStyle(connected ? .green : .secondary)
             }
+            Button("Forget") { peerToForget = peerId }
+                .help("Stop syncing with this device")
+                .accessibilityIdentifier("forget-device")
         }
         .padding(.vertical, 2)
+    }
+
+    /// Unpairing is destructive enough to confirm — it can only be undone by
+    /// pairing again, which needs the other device in hand.
+    @ViewBuilder private var forgetConfirmation: some View {
+        let name = peerToForget.map { model.peerName(for: $0) } ?? ""
+        Text("“\(name)” will stop syncing with this Mac. Notes it already sent stay here. "
+            + "To sync with it again you'll have to pair it again.")
     }
 
     private func isSyncing(peerId: String) -> Bool {

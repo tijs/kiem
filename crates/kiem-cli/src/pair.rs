@@ -44,6 +44,60 @@ pub async fn add(data_dir: &Path, ticket: &str, as_json: bool) -> Result<()> {
     }
 }
 
+/// `kiem pair list`: the trust list, with remembered names. Reads the
+/// known-peers file, so it works with or without a running daemon — and it is
+/// where the ids for `kiem pair forget` come from (`sync-status` only shows
+/// peers that are currently connected, which a device you no longer have
+/// never is).
+pub fn list(data_dir: &Path, as_json: bool) -> Result<()> {
+    let known = KnownPeers::load(&data_dir.join(PEERS_FILE))?;
+    let peers: Vec<(EndpointId, Option<String>)> = known
+        .ids()
+        .into_iter()
+        .map(|id| {
+            let name = kiem_sync::peer_name(data_dir, &id);
+            (id, name)
+        })
+        .collect();
+    if as_json {
+        let rows: Vec<_> = peers
+            .iter()
+            .map(|(id, name)| json!({ "peer_id": id.to_string(), "name": name }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else if peers.is_empty() {
+        println!("no paired devices");
+    } else {
+        for (id, name) in &peers {
+            match name {
+                Some(name) => println!("{id}  {name}"),
+                None => println!("{id}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `kiem pair forget <peer-id>`: unpair a device. Through the daemon when one
+/// is running — it owns the live connection and the in-memory sync state, and
+/// only it can close and drop them — otherwise straight at the files.
+pub async fn forget(data_dir: &Path, peer_id: &str, as_json: bool) -> Result<()> {
+    let peer: EndpointId = peer_id
+        .trim()
+        .parse()
+        .with_context(|| format!("{peer_id} is not a peer id (see `kiem pair list`)"))?;
+    let known = match UnixStream::connect(data_dir.join(control::SOCKET_FILE)).await {
+        Ok(stream) => forget_via_daemon(stream, &peer).await?,
+        Err(_) => {
+            let store = NoteStore::open_dir(data_dir)
+                .with_context(|| format!("opening data directory {}", data_dir.display()))?;
+            kiem_sync::forget(data_dir, &kiem_sync::shared_state(store), &peer)?
+        }
+    };
+    print_forgotten(&peer.to_string(), known, as_json);
+    Ok(())
+}
+
 // MARK: via the daemon's control socket
 
 async fn show_via_daemon(stream: UnixStream, yes: bool, as_json: bool) -> Result<()> {
@@ -72,7 +126,8 @@ async fn show_via_daemon(stream: UnixStream, yes: bool, as_json: bool) -> Result
                 return Ok(());
             }
             Some(Response::Error(message)) => bail!("daemon: {message}"),
-            Some(Response::Added(_)) => {} // not part of a show session
+            // Not part of a show session.
+            Some(Response::Added(_) | Response::Forgotten { .. }) => {}
         }
     }
 }
@@ -111,6 +166,24 @@ async fn add_via_daemon(stream: UnixStream, ticket: &str, as_json: bool) -> Resu
                 return Ok(());
             }
         }
+    }
+}
+
+async fn forget_via_daemon(stream: UnixStream, peer: &EndpointId) -> Result<bool> {
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    send_line(
+        &mut write,
+        &Request::Forget {
+            peer_id: peer.to_string(),
+        },
+    )
+    .await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    match read_response(&mut lines, deadline).await? {
+        Some(Response::Forgotten { known }) => Ok(known),
+        Some(Response::Error(err)) => bail!("{err}"),
+        _ => bail!("the daemon did not acknowledge the unpair"),
     }
 }
 
@@ -310,6 +383,16 @@ fn print_paired(peer: &str, as_json: bool) {
         println!("{}", json!({ "paired": peer }));
     } else {
         println!("paired with {peer}");
+    }
+}
+
+fn print_forgotten(peer: &str, known: bool, as_json: bool) {
+    if as_json {
+        println!("{}", json!({ "forgot": peer, "was_paired": known }));
+    } else if known {
+        println!("unpaired {peer} — it can no longer sync with this device");
+    } else {
+        println!("{peer} was not a paired device");
     }
 }
 

@@ -297,20 +297,32 @@ impl SyncEngine {
     /// lose its document, it detects that our shared heads are unknown to it
     /// and replies with a `SYNC_RESET` message, which starts over.
     ///
-    /// Keeping the entries means nothing removes them: a `(peer, doc)` state
-    /// lives for the rest of the process once seen. That is bounded by the
-    /// paired-device count (the trust gate means only paired peers ever
-    /// connect) and it is the whole point for those peers. The gap is
-    /// unpairing — there is no unpair path in the product today (`KnownPeers`
-    /// has `add` and no removal), so whoever adds one must also add a real
-    /// `forget_peer` that drops these entries, or a long-lived daemon will
-    /// hold a removed device's states until restart.
+    /// Keeping the entries means a disconnect never removes them: a
+    /// `(peer, doc)` state lives as long as the peer stays paired, which is
+    /// the whole point. Unpairing is what drops them — see [`forget_peer`],
+    /// which every unpair path must call.
+    ///
+    /// [`forget_peer`]: Self::forget_peer
     pub fn reset_peer(&mut self, peer: &str) {
         for ((p, _), state) in self.states.iter_mut() {
             if p == peer {
                 *state = State::decode(&state.encode()).unwrap_or_default();
             }
         }
+    }
+
+    /// Drop every per-document sync state for `peer` — unpairing, not
+    /// disconnecting. The next contact (if the device is ever paired again)
+    /// starts from nothing, exactly as if it had never been seen.
+    ///
+    /// The opposite of [`reset_peer`], which keeps the shared heads precisely
+    /// so a reconnect is cheap. Removal is what bounds the map: a long-lived
+    /// process (the headless daemon runs for weeks) would otherwise hold a
+    /// discarded device's states until restart.
+    ///
+    /// [`reset_peer`]: Self::reset_peer
+    pub fn forget_peer(&mut self, peer: &str) {
+        self.states.retain(|(p, _), _| p != peer);
     }
 
     fn state_for(&mut self, peer: &str, doc_id: &str) -> &mut State {
@@ -673,6 +685,28 @@ mod tests {
             resumed * 2 < cold,
             "reconnect after a disconnect should resume from shared heads: \
              {resumed} bytes vs {cold} for a cold restart"
+        );
+    }
+
+    #[test]
+    fn forgetting_a_peer_drops_its_state_so_the_next_contact_is_cold() {
+        // The mirror image of the test above: unpairing must *not* keep the
+        // shared heads. Same fixture, so the two numbers are comparable — a
+        // forgotten peer costs exactly what a never-seen one costs.
+        let (mut a, mut b) = converged_pair_with_history();
+        a.engine.forget_peer("b");
+        b.engine.forget_peer("a");
+        let forgotten = converge_bytes(&mut a, &mut b);
+
+        let (mut a, mut b) = converged_pair_with_history();
+        a.engine = SyncEngine::new();
+        b.engine = SyncEngine::new();
+        let cold = converge_bytes(&mut a, &mut b);
+
+        assert_eq!(
+            forgotten, cold,
+            "forget_peer left state behind: a forgotten peer re-handshaked in \
+             {forgotten} bytes where a never-seen one costs {cold}"
         );
     }
 
