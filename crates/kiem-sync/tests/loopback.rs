@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kiem_core::note::NoteDoc;
+use kiem_sync::SyncState;
 
 mod common;
 use common::{bind_loopback, empty_state, handshake, AbortOnDrop};
@@ -30,7 +31,7 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
         let b_state = empty_state();
         a_state
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "n1".into(),
                 "# Hello\n\nfrom A",
@@ -86,7 +87,7 @@ async fn two_peers_converge_a_note_over_a_real_iroh_connection() {
 
         let mut synced = false;
         for _ in 0..200 {
-            if b_state.lock().0.get_note("n1").unwrap().is_some() {
+            if b_state.lock().store.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -136,7 +137,7 @@ async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
         let b_state = empty_state();
         a_state
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "n1".into(),
                 "# Hello\n\nfrom A",
@@ -184,7 +185,7 @@ async fn idle_ticker_rounds_do_not_count_as_sync_activity_after_convergence() {
 
         let mut synced = false;
         for _ in 0..200 {
-            if b_state.lock().0.get_note("n1").unwrap().is_some() {
+            if b_state.lock().store.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -255,7 +256,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
         // fixture shape as the unit test in kiem-core's sync.rs.
         a_state
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "n1".into(),
                 "# History",
@@ -266,7 +267,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
         for i in 0..200 {
             a_state
                 .lock()
-                .0
+                .store
                 .update_note("n1", &format!("# History\n\nedit {i}"))
                 .unwrap();
         }
@@ -296,7 +297,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
 
         let mut synced = false;
         for _ in 0..200 {
-            if b_state.lock().0.get_note("n1").unwrap().is_some() {
+            if b_state.lock().store.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -329,7 +330,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
 
         // Claim 1: the state left behind resumes from the shared heads.
         let resumed = {
-            let (store, engine) = &mut *a_state.lock();
+            let SyncState { store, engine } = &mut *a_state.lock();
             engine
                 .generate_message(store, &b_peer, "n1")
                 .unwrap()
@@ -337,7 +338,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
                 .len()
         };
         let cold = {
-            let (store, _) = &mut *a_state.lock();
+            let store = &mut a_state.lock().store;
             kiem_core::sync::SyncEngine::new()
                 .generate_message(store, &b_peer, "n1")
                 .unwrap()
@@ -353,7 +354,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
         // Claim 2: a new note still replicates over the reconnect.
         a_state
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "n2".into(),
                 "# After the reconnect",
@@ -380,7 +381,7 @@ async fn a_session_that_ends_leaves_resumable_state_and_the_next_one_replicates(
 
         let mut resynced = false;
         for _ in 0..200 {
-            if b_state.lock().0.get_note("n2").unwrap().is_some() {
+            if b_state.lock().store.get_note("n2").unwrap().is_some() {
                 resynced = true;
                 break;
             }

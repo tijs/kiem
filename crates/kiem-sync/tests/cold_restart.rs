@@ -33,7 +33,7 @@ const SHARED_DOCS: usize = 80;
 fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
     for i in 0..SHARED_DOCS {
         a.lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 format!("shared-{i:04}"),
                 &format!("# Shared {i}\n\nbody {i}"),
@@ -49,26 +49,26 @@ fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
     for _ in 0..10 {
         let mut quiet = true;
         let ids = {
-            let store = &a.lock().0;
+            let store = &a.lock().store;
             ea.doc_ids(store).unwrap()
         };
         for id in &ids {
             let msg = {
-                let store = &a.lock().0;
+                let store = &a.lock().store;
                 ea.generate_message(store, "b", id).unwrap()
             };
             if let Some(msg) = msg {
                 quiet = false;
-                let (store, _) = &mut *b.lock();
+                let store = &mut b.lock().store;
                 eb.receive_message(store, "a", id, &msg).unwrap();
             }
             let reply = {
-                let store = &b.lock().0;
+                let store = &b.lock().store;
                 eb.generate_message(store, "a", id).unwrap()
             };
             if let Some(reply) = reply {
                 quiet = false;
-                let (store, _) = &mut *a.lock();
+                let store = &mut a.lock().store;
                 ea.receive_message(store, "b", id, &reply).unwrap();
             }
         }
@@ -76,9 +76,9 @@ fn seed_converged_then_forget_engines(a: &SharedState, b: &SharedState) {
             break;
         }
     }
-    b.lock().0.flush_search_index().unwrap();
+    b.lock().store.flush_search_index().unwrap();
     assert_eq!(
-        b.lock().0.list_all_ids().unwrap().len(),
+        b.lock().store.list_all_ids().unwrap().len(),
         SHARED_DOCS,
         "seeding did not converge the two stores"
     );
@@ -99,7 +99,7 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
         // The post-restart edit on each side: one note the peer has never seen.
         a_state
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "only-on-a".into(),
                 "# From A\n\nafter restart",
@@ -109,7 +109,7 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
             .unwrap();
         b_state
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "only-on-b".into(),
                 "# From B\n\nafter restart",
@@ -156,13 +156,13 @@ async fn cold_restart_with_a_large_shared_store_still_replicates_new_notes() {
         for _ in 0..400 {
             let a_has_b = a_state
                 .lock()
-                .0
+                .store
                 .get_note("only-on-b")
                 .unwrap()
                 .is_some();
             let b_has_a = b_state
                 .lock()
-                .0
+                .store
                 .get_note("only-on-a")
                 .unwrap()
                 .is_some();
@@ -221,7 +221,7 @@ async fn both_peers_pushing_a_large_backlog_at_once_still_converge() {
             for i in 0..EACH {
                 state
                     .lock()
-                    .0
+                    .store
                     .insert_note(&NoteDoc::new_with(
                         format!("{side}-{i:04}"),
                         &format!("# {side} {i}\n\n{filler}"),
@@ -258,8 +258,8 @@ async fn both_peers_pushing_a_large_backlog_at_once_still_converge() {
         let mut last = (0, 0);
         let mut converged = false;
         for _ in 0..300 {
-            let a_count = a_state.lock().0.list_all_ids().unwrap().len();
-            let b_count = b_state.lock().0.list_all_ids().unwrap().len();
+            let a_count = a_state.lock().store.list_all_ids().unwrap().len();
+            let b_count = b_state.lock().store.list_all_ids().unwrap().len();
             if (a_count, b_count) != last {
                 eprintln!(
                     "{:?} a={a_count} b={b_count} activity={}",

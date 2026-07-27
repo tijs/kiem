@@ -72,8 +72,20 @@ pub enum SessionError {
     Sync(#[from] SyncError),
 }
 
-/// Shared, lockable note store + sync engine — the same pairing
-/// `kiem-cli`'s daemon holds today, just behind an `Arc` for async tasks.
+/// The note store and the sync engine, under one lock.
+///
+/// They are locked together on purpose: a local edit must not interleave with
+/// an incoming sync message mid-hydrate/reconcile (autosurgeon `StaleHeads`).
+///
+/// Take both fields at once with `let SyncState { store, engine } = &mut
+/// *guard;` where an operation needs both — that splits the borrow, which a
+/// pair of method calls on the guard would not.
+pub struct SyncState {
+    pub store: NoteStore,
+    pub engine: SyncEngine,
+}
+
+/// [`SyncState`] shared across async tasks.
 ///
 /// `parking_lot::Mutex`, not `std::sync::Mutex`, and that choice is
 /// load-bearing: macOS's std mutex is unfair, and during a receive burst the
@@ -82,12 +94,15 @@ pub enum SessionError {
 /// fairness hands the lock to a waiter that's been parked ~1ms, bounding
 /// starvation. It also doesn't poison, so a panicked sync task can't brick
 /// every later store call from the app/CLI.
-pub type SharedState = Arc<Mutex<(NoteStore, SyncEngine)>>;
+pub type SharedState = Arc<Mutex<SyncState>>;
 
 /// The one way to build a [`SharedState`] — keeps the fair-mutex choice in
 /// this crate instead of leaking `parking_lot` into every consumer.
 pub fn shared_state(store: NoteStore) -> SharedState {
-    Arc::new(Mutex::new((store, SyncEngine::new())))
+    Arc::new(Mutex::new(SyncState {
+        store,
+        engine: SyncEngine::new(),
+    }))
 }
 
 /// Runs one peer session until the connection closes. `dialed` picks which
@@ -140,7 +155,7 @@ pub async fn run(
 
     let result = reader_loop(&mut recv, &state, peer_id, &send, &handshake).await;
 
-    state.lock().1.reset_peer(&peer);
+    state.lock().engine.reset_peer(&peer);
     ticker.abort();
     result
 }
@@ -195,7 +210,7 @@ async fn sync_round(
         // problem from the round itself being slow.
         let mut guard = state.lock();
         let waited = started.elapsed();
-        let (store, engine) = &mut *guard;
+        let SyncState { store, engine } = &mut *guard;
         // One problematic document (corrupt bytes, a protocol edge case)
         // must never take the whole round down with it — `ticker_loop`
         // returns for good on any `Err` from here, permanently breaking
@@ -325,7 +340,7 @@ async fn reader_loop(
         let apply_started = Instant::now();
         let mut silent_kind = 0u8; // 0 = stored/converged, 1 = no doc, 2 = pending
         let reply = {
-            let (store, engine) = &mut *state.lock();
+            let SyncState { store, engine } = &mut *state.lock();
             if let Err(e) = engine.receive_message(store, &peer, &doc_id, &payload) {
                 eprintln!("kiem sync: receive_message failed for {doc_id}, skipping: {e}");
                 None

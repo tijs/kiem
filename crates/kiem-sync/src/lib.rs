@@ -16,4 +16,6 @@ pub use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 pub use mesh::{forget, pair_add, pair_ticket, Mesh, MeshEvents, NoEvents, PEERS_FILE};
 pub use names::{device_name, peer_name, set_device_name};
 pub use peers::{my_ticket, parse_ticket, KnownPeers, PeersError};
-pub use session::{run as run_session, shared_state, PeerHandshake, SessionError, SharedState};
+pub use session::{
+    run as run_session, shared_state, PeerHandshake, SessionError, SharedState, SyncState,
+};

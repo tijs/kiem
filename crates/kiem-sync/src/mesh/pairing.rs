@@ -66,6 +66,6 @@ pub fn forget(data_dir: &Path, state: &SharedState, peer: &EndpointId) -> Result
     // Best-effort: a stale display name is cosmetic, and failing the unpair
     // over it would leave the device trusted, which is the part that matters.
     let _ = forget_peer_name(data_dir, peer);
-    state.lock().1.forget_peer(&peer.to_string());
+    state.lock().engine.forget_peer(&peer.to_string());
     Ok(was_known)
 }

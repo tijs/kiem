@@ -61,7 +61,7 @@ fn state_with_note() -> SharedState {
     let state = empty_state();
     state
         .lock()
-        .0
+        .store
         .insert_note(&NoteDoc::new_with(
             "n1".into(),
             "# Hello\n\nfrom A",
@@ -119,7 +119,7 @@ async fn approved_pairing_syncs_and_records_mutual_trust() {
 
         let mut synced = false;
         for _ in 0..300 {
-            if state_b.lock().0.get_note("n1").unwrap().is_some() {
+            if state_b.lock().store.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -200,7 +200,7 @@ async fn forgetting_a_device_stops_syncing_with_it() {
         // Precondition: they really are paired and syncing.
         let mut synced = false;
         for _ in 0..300 {
-            if state_b.lock().0.get_note("n1").unwrap().is_some() {
+            if state_b.lock().store.get_note("n1").unwrap().is_some() {
                 synced = true;
                 break;
             }
@@ -221,7 +221,7 @@ async fn forgetting_a_device_stops_syncing_with_it() {
         // B writes a note it would have synced a second ago.
         state_b
             .lock()
-            .0
+            .store
             .insert_note(&NoteDoc::new_with(
                 "n2".into(),
                 "# After unpairing",
@@ -235,7 +235,7 @@ async fn forgetting_a_device_stops_syncing_with_it() {
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert!(
-                state_a.lock().0.get_note("n2").unwrap().is_none(),
+                state_a.lock().store.get_note("n2").unwrap().is_none(),
                 "a forgotten device is still syncing to us"
             );
         }
@@ -396,7 +396,7 @@ async fn unknown_peer_is_refused_when_no_window_is_open() {
             "B trusted an unknown peer with no pairing window"
         );
         assert!(
-            state_b.lock().0.get_note("n1").unwrap().is_none(),
+            state_b.lock().store.get_note("n1").unwrap().is_none(),
             "a note synced to B despite the pairing being refused"
         );
     })
