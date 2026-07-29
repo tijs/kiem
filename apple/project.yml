@@ -8,6 +8,7 @@ options:
   # there is no legacy-OS support target.
   deploymentTarget:
     macOS: "26.0"
+    iOS: "26.0"
 packages:
   KiemKit:
     path: KiemKit
@@ -95,6 +96,25 @@ targets:
         # Dev builds run unsandboxed: the app shares ~/.kiem with the CLI.
         ENABLE_APP_SANDBOX: NO
         CODE_SIGN_IDENTITY: "-"
+  # The iOS app is still an empty SwiftUI shell — it links neither KiemKit
+  # (build-kiemkit.sh packages macOS slices only: `--platforms macos`) nor Pulp,
+  # whose iOS port is on the roadmap. Add both dependencies once they exist.
+  Kiem iOS:
+    type: application
+    platform: iOS
+    sources: [Kiem iOS]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.tijs.kiem.ios
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "6"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        CODE_SIGN_IDENTITY: "-"
+
   # UI tests drive the real app against a throwaway KIEM_DATA_DIR — the only
   # sanctioned way to automate SwiftUI List selection, keyboard shortcuts,
   # and quit/relaunch checks (AppleScript/synthetic events can't; see the
@@ -131,6 +151,14 @@ schemes:
     profile:
       config: Release
     analyze:
+      config: Debug
+    archive:
+      config: Release
+  Kiem iOS:
+    build:
+      targets:
+        Kiem iOS: all
+    run:
       config: Debug
     archive:
       config: Release
