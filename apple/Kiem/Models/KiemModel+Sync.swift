@@ -53,6 +53,12 @@ extension KiemModel {
         }
     }
 
+    /// This device's endpoint id, shortened to the same length the other side's
+    /// Allow/Deny prompt shows — so the two can be compared by eye.
+    var shortDeviceId: String {
+        String(authorDid.prefix(12))
+    }
+
     /// The pairing window's length. Long enough to walk to the other device,
     /// short enough that a leaked code goes stale quickly.
     private static let pairingWindowSecs: UInt64 = 120

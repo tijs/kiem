@@ -49,7 +49,9 @@ struct ContentView: View {
             Button("Allow") { model.resolvePairing(true) }
             Button("Don’t Allow", role: .cancel) { model.resolvePairing(false) }
         } message: { request in
-            Text("A device (\(request.shortPeerId)…) wants to pair and sync your notes. Only allow devices you recognize.")
+            let message = "A device (\(request.shortPeerId)…) wants to pair and sync your notes. "
+                + "Check that this matches the id shown beside the QR code on that device."
+            Text(message)
         }
         .alert("New Project", isPresented: $showingNewProject) {
             TextField("Project name", text: $newProjectName)

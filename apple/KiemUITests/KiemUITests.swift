@@ -135,12 +135,13 @@ final class KiemUITests: XCTestCase {
         XCTAssertTrue(app.buttons["New Note"].firstMatch.waitForExistence(timeout: 30))
         app.typeKey(",", modifierFlags: .command)
 
+        app.buttons["Pair a New Device…"].firstMatch.click()
+
         let copyCode = app.buttons["Copy code"].firstMatch
         XCTAssertTrue(copyCode.waitForExistence(timeout: 25), "pairing code did not load")
         copyCode.click()
         let copied = NSPasteboard.general.string(forType: .string)
         XCTAssertFalse(copied?.isEmpty ?? true, "Copy code did not write a ticket")
-        app.radioButtons["Add a device"].firstMatch.click()
 
         let input = app.descendants(matching: .any)["pairing-code"]
         XCTAssertTrue(input.waitForExistence(timeout: 5))
@@ -155,11 +156,10 @@ final class KiemUITests: XCTestCase {
         )
     }
 
-    /// Pairing moved out of the toolbar into Settings (⌘,). The Sync pane must
-    /// render this Mac's code (QR + copyable string, once the relay hint loads)
-    /// and switch to the Add-a-device panel — and pairing must NOT be in the
-    /// main toolbar anymore.
-    func testSyncSettingsPaneRendersPairingUI() {
+    /// Pairing lives in Settings (⌘,), behind an explicit button: opening the
+    /// pane must NOT make this Mac discoverable, and pressing the button must
+    /// show both halves of the handshake on one screen.
+    func testPairingStartsOnlyWhenAsked() {
         let app = launchApp()
         XCTAssertTrue(app.buttons["New Note"].firstMatch.waitForExistence(timeout: 30), "app did not reach the main window")
 
@@ -169,20 +169,23 @@ final class KiemUITests: XCTestCase {
         // Open Settings → Sync pane.
         app.typeKey(",", modifierFlags: .command)
 
+        let startPairing = app.buttons["Pair a New Device…"].firstMatch
+        XCTAssertTrue(startPairing.waitForExistence(timeout: 10), "Sync pane did not offer to pair")
+        // The pane itself arms nothing — no code is shown until asked.
+        XCTAssertFalse(app.buttons["Copy code"].exists, "the pane armed pairing without being asked")
+
+        startPairing.click()
+
         // "Copy code" appears only after the ticket loads (which waits briefly
         // for a relay hint), so give it room.
-        let copyCode = app.buttons["Copy code"].firstMatch
         XCTAssertTrue(
-            copyCode.waitForExistence(timeout: 25),
-            "Sync pane did not show this Mac's pairing code"
+            app.buttons["Copy code"].firstMatch.waitForExistence(timeout: 25),
+            "the pairing sheet did not show this Mac's code"
         )
-
-        // Switching to Add wires up the paste panel. A SwiftUI segmented picker
-        // surfaces its segments as radio buttons on macOS.
-        app.radioButtons["Add a device"].firstMatch.click()
+        // Both halves live on the one screen — no mode to pick.
         XCTAssertTrue(
-            app.buttons["Add device"].firstMatch.waitForExistence(timeout: 5),
-            "Add-a-device panel did not appear"
+            app.buttons["Add device"].firstMatch.exists,
+            "the pairing sheet did not offer to add the other device's code"
         )
     }
 
