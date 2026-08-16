@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-08-16
+
+- Changed: pairing is now explicit. Opening Sync settings no longer makes this Mac discoverable; pairing starts from a dedicated sheet that shows the QR code, paste field, expiry countdown, and a shortened device id to compare with the approval prompt on the other device.
+- Added: the initial iOS app target and test bundle stubs are now tracked, ready for the future iOS KiemKit and Pulp integrations.
+
 ## 0.3.0 - 2026-07-27
 
 - Added: you can unpair a device you no longer have. Settings → Sync → Paired devices now has a Forget button on each device (with a confirmation), and the CLI has `kiem pair list` and `kiem pair forget <peer-id>`. A forgotten device stops syncing immediately — the live connection closes, it can no longer connect in either direction, and its name and sync state are dropped. Notes it already sent stay; pairing it again later is a normal fresh pairing.
