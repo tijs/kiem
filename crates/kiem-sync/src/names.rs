@@ -3,6 +3,8 @@
 //! from peers during pairing.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use iroh::EndpointId;
@@ -34,10 +36,7 @@ pub fn set_device_name(data_dir: &Path, name: &str) -> std::io::Result<()> {
         return Ok(());
     }
     let path = data_dir.join(DEVICE_NAME_FILE);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, trimmed.as_bytes())
+    write_private_file(&path, trimmed.as_bytes())
 }
 
 /// The remembered display name for a peer, if any.
@@ -46,7 +45,11 @@ pub fn peer_name(data_dir: &Path, peer_id: &EndpointId) -> Option<String> {
 }
 
 /// Remember a peer's display name. Empty names are ignored.
-pub(crate) fn set_peer_name(data_dir: &Path, peer_id: &EndpointId, name: &str) -> std::io::Result<()> {
+pub(crate) fn set_peer_name(
+    data_dir: &Path,
+    peer_id: &EndpointId,
+    name: &str,
+) -> std::io::Result<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Ok(());
@@ -79,15 +82,32 @@ fn peer_names(data_dir: &Path) -> HashMap<String, String> {
 
 fn save_peer_names(data_dir: &Path, names: &HashMap<String, String>) -> std::io::Result<()> {
     let path = peer_names_path(data_dir);
+    let contents =
+        serde_json::to_string_pretty(names).expect("a map of strings always serializes to JSON");
+    write_private_file(&path, contents.as_bytes())
+}
+
+/// Writes metadata that may reveal paired-device information. On Unix, both
+/// fresh and pre-existing files are forced to `0600`; non-Unix uses native ACLs.
+fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::storage::ensure_private_data_dir(parent)?;
     }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(names)
-            .unwrap_or_default()
-            .as_bytes(),
-    )
+    let mut options = File::options();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(contents)?;
+    file.sync_all()
 }
 
 #[cfg(test)]
@@ -110,10 +130,36 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn device_and_peer_name_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let peer = SecretKey::generate().public();
+        set_device_name(dir.path(), "My Mac").unwrap();
+        set_peer_name(dir.path(), &peer, "Other Mac").unwrap();
+
+        for path in [
+            dir.path().join(DEVICE_NAME_FILE),
+            dir.path().join(PEER_NAMES_FILE),
+        ] {
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{} must not be group/other-readable",
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn forgetting_a_peer_name_removes_only_that_peer() {
         let dir = tempfile::tempdir().unwrap();
-        let (gone, kept) = (SecretKey::generate().public(), SecretKey::generate().public());
+        let (gone, kept) = (
+            SecretKey::generate().public(),
+            SecretKey::generate().public(),
+        );
         set_peer_name(dir.path(), &gone, "Old Mac").unwrap();
         set_peer_name(dir.path(), &kept, "Other Mac").unwrap();
 

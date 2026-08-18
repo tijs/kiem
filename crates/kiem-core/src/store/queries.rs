@@ -8,7 +8,9 @@ use rusqlite::{params, OptionalExtension, Row};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use super::{doc_version, document_err, FilterCounts, NoteStore, ProjectTodo, StoreError};
+use super::{
+    doc_version, document_err, FilterCounts, NoteStore, ProjectTodo, StoreError, VersionedNote,
+};
 use crate::content;
 use crate::note::{NoteDoc, NoteMetadata};
 use crate::search::SearchResult;
@@ -88,6 +90,21 @@ impl NoteStore {
         match self.load_doc(id)? {
             None => Ok(None),
             Some(doc) => hydrate(&doc).map(Some).map_err(|e| document_err(id, e)),
+        }
+    }
+
+    /// Load a note with the exact Automerge-head token representing this read.
+    /// A caller making a whole-body replacement must pass that token to
+    /// [`Self::update_note_if_version`](NoteStore::update_note_if_version) so
+    /// an external write cannot be silently overwritten.
+    pub fn get_note_with_version(&self, id: &str) -> Result<Option<VersionedNote>, StoreError> {
+        match self.load_doc(id)? {
+            None => Ok(None),
+            Some(mut doc) => {
+                let version = doc_version(&mut doc);
+                let note = hydrate(&doc).map_err(|e| document_err(id, e))?;
+                Ok(Some(VersionedNote { note, version }))
+            }
         }
     }
 

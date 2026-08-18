@@ -1,4 +1,8 @@
-use std::path::Path;
+use std::fs::{self, File, TryLockError};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_tickets::endpoint::EndpointTicket;
@@ -12,6 +16,11 @@ pub enum PeersError {
     },
     #[error("writing known-peers file at {path}: {source}")]
     Write {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error("locking known-peers updates at {path}: {source}")]
+    Lock {
         path: String,
         source: std::io::Error,
     },
@@ -72,45 +81,167 @@ impl KnownPeers {
     }
 
     /// Adds a peer (no-op if already known) and persists the updated list.
+    ///
+    /// The file is reloaded while holding the narrowly-scoped peer-store lock,
+    /// rather than trusting `self`: callers commonly loaded `self` before a
+    /// separate CLI or first-contact callback changed the file.
     pub fn add(&mut self, path: &Path, addr: EndpointAddr) -> Result<(), PeersError> {
-        if self.contains(&addr.id) {
-            return Ok(());
-        }
-        self.addrs.push(addr);
-        self.save(path)
+        let (current, ()) = Self::update(path, move |current| {
+            if current.contains(&addr.id) {
+                ((), false)
+            } else {
+                current.addrs.push(addr);
+                ((), true)
+            }
+        })?;
+        *self = current;
+        Ok(())
     }
 
     /// Drops a peer from the trust list and persists it. Returns whether it
     /// was there — `false` lets a caller report "not a paired device" instead
     /// of silently succeeding on a typo'd id.
     pub fn remove(&mut self, path: &Path, id: &EndpointId) -> Result<bool, PeersError> {
-        let before = self.addrs.len();
-        self.addrs.retain(|a| &a.id != id);
-        if self.addrs.len() == before {
-            return Ok(false);
-        }
-        self.save(path)?;
-        Ok(true)
+        let id = *id;
+        let (current, was_known) = Self::update(path, move |current| {
+            let before = current.addrs.len();
+            current.addrs.retain(|addr| addr.id != id);
+            (before != current.addrs.len(), before != current.addrs.len())
+        })?;
+        *self = current;
+        Ok(was_known)
     }
 
-    fn save(&self, path: &Path) -> Result<(), PeersError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| PeersError::Write {
-                path: path.display().to_string(),
-                source,
-            })?;
+    /// Serializes a complete read-modify-write transaction with a distinct
+    /// sibling lock file. This deliberately does not take `mesh.lock`: a
+    /// running mesh must be able to observe a one-shot `kiem pair` update.
+    fn update<T>(
+        path: &Path,
+        update: impl FnOnce(&mut Self) -> (T, bool),
+    ) -> Result<(Self, T), PeersError> {
+        let _lock = acquire_update_lock(path)?;
+        let mut current = Self::load(path)?;
+        let (result, changed) = update(&mut current);
+        if changed {
+            current.save_unlocked(path)?;
         }
+        Ok((current, result))
+    }
+
+    /// Writes a completed replacement beside the old file, then atomically
+    /// renames it into place. Readers therefore see either the prior complete
+    /// list or the next complete list, never a truncated file.
+    fn save_unlocked(&self, path: &Path) -> Result<(), PeersError> {
         let contents = self
             .addrs
             .iter()
             .map(|addr| EndpointTicket::new(addr.clone()).to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(path, contents).map_err(|source| PeersError::Write {
+        atomic_write(path, contents.as_bytes()).map_err(|source| PeersError::Write {
             path: path.display().to_string(),
             source,
         })
     }
+}
+
+/// Acquires a short-lived advisory lock for a full known-peers transaction.
+/// It is separate from `mesh.lock`: a mesh holds that lock for its lifetime,
+/// while CLI pair/forget and first-contact callbacks must still update peers.
+fn acquire_update_lock(path: &Path) -> Result<File, PeersError> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    crate::storage::ensure_private_data_dir(parent).map_err(|source| PeersError::Lock {
+        path: parent.display().to_string(),
+        source,
+    })?;
+
+    let lock_path = path.with_file_name(format!(".{}.lock", file_name(path)));
+    let mut options = File::options();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .map_err(|source| PeersError::Lock {
+            path: lock_path.display().to_string(),
+            source,
+        })?;
+
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(10)),
+            Err(TryLockError::Error(source)) => {
+                return Err(PeersError::Lock {
+                    path: lock_path.display().to_string(),
+                    source,
+                });
+            }
+        }
+    }
+}
+
+fn atomic_write(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let (temp_path, mut temp_file) = create_temporary_file(path)?;
+    if let Err(error) = temp_file
+        .write_all(contents)
+        .and_then(|()| temp_file.sync_all())
+    {
+        drop(temp_file);
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    drop(temp_file);
+
+    match fs::rename(&temp_path, path) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&temp_path);
+            Err(error)
+        }
+    }
+}
+
+fn create_temporary_file(path: &Path) -> std::io::Result<(PathBuf, File)> {
+    static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
+
+    for _ in 0..256 {
+        let temp_path = path.with_file_name(format!(
+            ".{}.tmp.{}.{}",
+            file_name(path),
+            std::process::id(),
+            NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut options = File::options();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temp_path) {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not allocate a unique known-peers temporary file",
+    ))
+}
+
+fn file_name(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("known-peers")
 }
 
 /// Generates a shareable ticket for this device, to be pasted or scanned (as a
@@ -150,6 +281,48 @@ mod tests {
 
         let reloaded = KnownPeers::load(&peers_path).unwrap();
         assert!(reloaded.contains(&their_id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_peers_and_its_update_lock_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let peers_path = dir.path().join("known-peers");
+        let addr = EndpointAddr::from(iroh::SecretKey::generate().public());
+        let mut peers = KnownPeers::load(&peers_path).unwrap();
+        peers.add(&peers_path, addr).unwrap();
+
+        for path in [peers_path.clone(), dir.path().join(".known-peers.lock")] {
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{} must not be group/other-readable",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn stale_peer_lists_merge_competing_additions_instead_of_losing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let peers_path = dir.path().join("known-peers");
+        let first_addr = EndpointAddr::from(iroh::SecretKey::generate().public());
+        let second_addr = EndpointAddr::from(iroh::SecretKey::generate().public());
+        let (first_id, second_id) = (first_addr.id, second_addr.id);
+
+        // These represent two one-shot processes (or two first-contact
+        // callbacks) that both observed the same initial file before either
+        // persisted its addition.
+        let mut first = KnownPeers::load(&peers_path).unwrap();
+        let mut second = KnownPeers::load(&peers_path).unwrap();
+        first.add(&peers_path, first_addr).unwrap();
+        second.add(&peers_path, second_addr).unwrap();
+
+        let persisted = KnownPeers::load(&peers_path).unwrap();
+        assert!(persisted.contains(&first_id));
+        assert!(persisted.contains(&second_id));
     }
 
     #[test]

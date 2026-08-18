@@ -167,7 +167,11 @@ impl SyncEngine {
                 Some((cached_bytes, _)) => cached_bytes != &bytes,
                 None => true,
             };
-            branch = if stale { "stored-reload" } else { "stored-cached" };
+            branch = if stale {
+                "stored-reload"
+            } else {
+                "stored-cached"
+            };
             if stale {
                 let doc = load_doc(doc_id, &bytes)?;
                 self.loaded.insert(doc_id.to_owned(), (bytes, doc));
@@ -253,6 +257,10 @@ impl SyncEngine {
             // the transport layer flushes the search index once per tick
             // (`flush_search_index`) rather than paying a commit per note.
             outcome = "stored";
+            // `put_doc_deferred` re-reads and merges against the current SQLite
+            // BLOB under a compare-and-swap predicate. The snapshot above can
+            // be stale because a GUI/CLI process may edit this note while this
+            // sync message is being decoded and applied.
             store.put_doc_deferred(&mut doc)?;
         } else {
             outcome = "pending";

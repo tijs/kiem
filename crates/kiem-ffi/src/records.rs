@@ -41,6 +41,9 @@ impl From<kiem_core::note::NoteMetadata> for NoteMetadata {
 pub struct Note {
     pub metadata: NoteMetadata,
     pub body: String,
+    /// Content-addressed Automerge heads for this read. Supply it to
+    /// `KiemStore.update_note_if_version` to reject a stale whole-body edit.
+    pub version: String,
 }
 
 #[derive(Debug, uniffi::Record)]
@@ -123,6 +126,12 @@ pub enum KiemError {
     NotFound { id: String },
     #[error("note already exists: {id}")]
     Duplicate { id: String },
+    #[error("note {id} changed since it was read (expected version {expected}, found {found})")]
+    Conflict {
+        id: String,
+        expected: String,
+        found: String,
+    },
     #[error("storage error: {message}")]
     Storage { message: String },
     #[error("sync error: {message}")]
@@ -137,6 +146,15 @@ impl From<StoreError> for KiemError {
         match err {
             StoreError::NotFound(id) => KiemError::NotFound { id },
             StoreError::DuplicateId(id) => KiemError::Duplicate { id },
+            StoreError::VersionMismatch {
+                id,
+                expected,
+                found,
+            } => KiemError::Conflict {
+                id,
+                expected,
+                found,
+            },
             other => KiemError::Storage {
                 message: other.to_string(),
             },

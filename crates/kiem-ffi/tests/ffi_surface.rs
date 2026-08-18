@@ -156,6 +156,25 @@ fn transfer_errors_map_to_the_transfer_variant() {
 }
 
 #[test]
+fn versioned_note_read_and_stale_write_cross_the_ffi_as_a_typed_conflict() {
+    let (_dir, store) = open_temp();
+    let meta = store
+        .create_note("# Bridge".into(), "did:key:test".into())
+        .unwrap();
+    let stale = store.get_note(meta.id.clone()).unwrap().unwrap();
+    let fresh = store.get_note(meta.id.clone()).unwrap().unwrap();
+    assert_eq!(stale.version, fresh.version);
+
+    store
+        .update_note_if_version(meta.id.clone(), "# First writer".into(), fresh.version)
+        .unwrap();
+    match store.update_note_if_version(meta.id, "# Stale writer".into(), stale.version) {
+        Err(KiemError::Conflict { .. }) => {}
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+}
+
+#[test]
 fn not_found_maps_to_typed_error() {
     let (_dir, store) = open_temp();
     match store.update_note("ghost".into(), "x".into()) {

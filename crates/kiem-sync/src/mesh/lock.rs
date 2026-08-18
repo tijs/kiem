@@ -22,20 +22,22 @@ pub(super) fn acquire(data_dir: &Path) -> Result<File, MeshError> {
     // used to be created as a side effect of `identity::load_or_create`,
     // which ran first; now that the lock is acquired first, it must create
     // the dir itself instead of failing on a missing parent.
-    std::fs::create_dir_all(data_dir).map_err(|source| MeshError::Lock {
+    crate::storage::ensure_private_data_dir(data_dir).map_err(|source| MeshError::Lock {
         path: data_dir.display().to_string(),
         source,
     })?;
     let path = data_dir.join(LOCK_FILE);
-    let file = File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|source| MeshError::Lock {
-            path: path.display().to_string(),
-            source,
-        })?;
+    let mut options = File::options();
+    options.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path).map_err(|source| MeshError::Lock {
+        path: path.display().to_string(),
+        source,
+    })?;
     match file.try_lock() {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(MeshError::AlreadyRunning {

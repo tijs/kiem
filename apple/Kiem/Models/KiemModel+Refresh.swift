@@ -40,10 +40,12 @@ extension KiemModel {
 
     /// If a sync (or other external) write changed the open note while the
     /// editor was holding stale text, reload the editor so the next flush does
-    /// not clobber the incoming change. Active typing is left alone: the pending
-    /// edit will merge with the external change on flush.
+    /// not clobber the incoming change. Active typing is left alone until its
+    /// version-checked flush; if the external write won, Rust rejects the stale
+    /// replacement and conflict recovery reloads the authoritative body.
     func reloadEditorIfExternalWriteChangedIt() {
-        guard let id = selectedNoteID, pendingEditTask == nil, loadingNoteID == nil else { return }
+        guard let id = selectedNoteID, pendingEditTask == nil, writingNoteID == nil,
+              loadingNoteID == nil else { return }
         perform { try $0.getNote(id: id) } then: { note in
             // Re-check: the user may have switched notes or resumed typing while
             // the read was queued.
@@ -53,6 +55,7 @@ extension KiemModel {
             // The pending edit (if any) targets the stale body; drop it.
             self.pendingEdit = nil
             self.loadedBody = note.body
+            self.loadedVersion = note.version
             self.editorText = note.body
         }
     }

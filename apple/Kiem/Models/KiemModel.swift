@@ -167,6 +167,10 @@ final class KiemModel {
     /// needed) from a real user edit.
     var loadedBody = ""
 
+    /// Automerge heads returned with `loadedBody`. Every editor flush supplies
+    /// this to Rust so a CLI or sync write cannot be replaced by stale text.
+    var loadedVersion: String?
+
     /// The not-yet-persisted edit, captured as (note, text) when scheduled so
     /// a flush always targets the note that was edited, never the current
     /// selection. Flushed after `Self.editDebounce` of typing silence, and
@@ -179,7 +183,12 @@ final class KiemModel {
     /// note's body.
     var loadingNoteID: String?
 
-    var pendingEdit: (noteID: String, text: String)?
+    var pendingEdit: (noteID: String, text: String, expectedVersion: String)?
+    /// A rejected debounce draft is retained separately while the editor reloads
+    /// the external body. The UI can offer a conflict-resolution affordance
+    /// without ever writing this stale text back automatically.
+    var rejectedEditorDraft: (noteID: String, text: String)?
+    var writingNoteID: String?
     var pendingEditTask: Task<Void, Never>?
     static let editDebounce: Duration = .milliseconds(400)
 

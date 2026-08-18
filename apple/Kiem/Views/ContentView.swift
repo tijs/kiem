@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Three-column layout: sidebar (tags) / note list / editor.
@@ -100,6 +101,13 @@ struct ContentView: View {
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
+            if let draft = model.rejectedEditorDraft {
+                Button("Copy Rejected Draft") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(draft.text, forType: .string)
+                    model.rejectedEditorDraft = nil
+                }
+            }
             Button("OK", role: .cancel) {}
         } message: {
             Text(model.errorMessage ?? "")

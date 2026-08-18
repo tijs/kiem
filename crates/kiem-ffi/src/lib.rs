@@ -110,9 +110,10 @@ impl KiemStore {
 
     pub fn get_note(&self, id: String) -> Result<Option<Note>, KiemError> {
         self.with(|store, _| {
-            Ok(store.get_note(&id)?.map(|doc| Note {
-                body: doc.body.as_str().to_owned(),
-                metadata: doc.metadata.into(),
+            Ok(store.get_note_with_version(&id)?.map(|versioned| Note {
+                body: versioned.note.body.as_str().to_owned(),
+                metadata: versioned.note.metadata.into(),
+                version: versioned.version,
             }))
         })
     }
@@ -121,6 +122,28 @@ impl KiemStore {
     /// incoming sync message cannot interleave (autosurgeon StaleHeads).
     pub fn update_note(&self, id: String, body: String) -> Result<NoteMetadata, KiemError> {
         self.with(|store, _| Ok(store.update_note(&id, &body)?.into()))
+    }
+
+    /// Replace an editor buffer only if it still descends from the version
+    /// returned by `get_note`. The typed `KiemError::Conflict` lets Swift
+    /// reload the external document rather than blindly overwriting it.
+    pub fn update_note_if_version(
+        &self,
+        id: String,
+        body: String,
+        expected_version: String,
+    ) -> Result<Note, KiemError> {
+        self.with(|store, _| {
+            store.update_note_if_version(&id, &body, &expected_version)?;
+            let versioned = store
+                .get_note_with_version(&id)?
+                .ok_or_else(|| kiem_core::store::StoreError::NotFound(id.clone()))?;
+            Ok(Note {
+                body: versioned.note.body.as_str().to_owned(),
+                metadata: versioned.note.metadata.into(),
+                version: versioned.version,
+            })
+        })
     }
 
     pub fn set_pinned(&self, id: String, pinned: bool) -> Result<NoteMetadata, KiemError> {

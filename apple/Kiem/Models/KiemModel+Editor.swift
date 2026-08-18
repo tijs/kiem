@@ -16,8 +16,8 @@ extension KiemModel {
         // note-open re-derives + persists metadata (bumping modified_at and, with
         // a mismatched embedded core, clobbering data). See
         // docs/solutions/integration-issues/stale-prebuilt-kiemkit-xcframework-clobbers-tags-2026-06-20.md
-        guard editorText != loadedBody else { return }
-        pendingEdit = (noteID: id, text: editorText)
+        guard editorText != loadedBody, let version = loadedVersion else { return }
+        pendingEdit = (noteID: id, text: editorText, expectedVersion: version)
         pendingEditTask?.cancel()
         pendingEditTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.editDebounce)
@@ -27,12 +27,11 @@ extension KiemModel {
     }
 
     /// Take the pending edit, if any, and stop its debounce timer.
-    func takePendingEdit() -> (noteID: String, text: String)? {
+    func takePendingEdit() -> (noteID: String, text: String, expectedVersion: String)? {
         pendingEditTask?.cancel()
         pendingEditTask = nil
         guard let edit = pendingEdit else { return nil }
         pendingEdit = nil
-        if edit.noteID == selectedNoteID { loadedBody = edit.text }
         return edit
     }
 
@@ -40,8 +39,19 @@ extension KiemModel {
     /// write is *enqueued* synchronously, so anything queued after it — a tag
     /// add, a delete, the next note's load — still lands after it.
     func flushPendingEdit() {
-        guard let (id, text) = takePendingEdit() else { return }
-        perform { try $0.updateNote(id: id, body: text) } then: { _ in
+        guard let (id, text, version) = takePendingEdit() else { return }
+        writingNoteID = id
+        perform { try $0.updateNoteIfVersion(id: id, body: text, expectedVersion: version) } onFailure: {
+            self.writingNoteID = nil
+            self.rejectedEditorDraft = (noteID: id, text: text)
+            self.errorMessage = "This note changed elsewhere, so your stale edit was not applied. The latest version was reloaded; the rejected draft remains available for conflict resolution."
+            self.reloadEditorAfterRejectedWrite(noteID: id)
+        } then: { note in
+            self.writingNoteID = nil
+            guard self.selectedNoteID == id else { return }
+            self.loadedBody = note.body
+            self.loadedVersion = note.version
+            self.rejectedEditorDraft = nil
             self.refreshNotes()
             self.refreshSidebar()
         }
@@ -51,9 +61,9 @@ extension KiemModel {
     /// where an enqueued write would die with the process. Blocks the main
     /// thread by design — at quit that's a beat, not a beachball.
     func flushPendingEditBlocking() {
-        guard let (id, text) = takePendingEdit() else { return }
+        guard let (id, text, version) = takePendingEdit() else { return }
         let store = self.store
-        storeQueue.sync { try? store.updateNote(id: id, body: text) }
+        storeQueue.sync { try? store.updateNoteIfVersion(id: id, body: text, expectedVersion: version) }
     }
 
     func loadSelectedNote() {
@@ -80,6 +90,20 @@ extension KiemModel {
             self.loadingNoteID = nil
             guard let note else { return }
             self.loadedBody = note.body
+            self.loadedVersion = note.version
+            self.editorText = note.body
+        }
+    }
+
+    /// Conflict recovery deliberately reloads rather than retrying the stale
+    /// whole-body replacement. Retrying would turn a rejected debounce into the
+    /// same cross-process clobber the version check prevented.
+    func reloadEditorAfterRejectedWrite(noteID: String) {
+        guard selectedNoteID == noteID, loadingNoteID == nil else { return }
+        perform { try $0.getNote(id: noteID) } then: { note in
+            guard let note, self.selectedNoteID == noteID, self.writingNoteID == nil else { return }
+            self.loadedBody = note.body
+            self.loadedVersion = note.version
             self.editorText = note.body
         }
     }

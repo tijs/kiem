@@ -2,6 +2,8 @@
 //! body-editing paths. Purges live in `store_purge_tests.rs`, checkboxes in
 //! `store_todo_tests.rs`.
 
+use automerge::AutoCommit;
+use kiem_core::note::NoteDoc;
 use kiem_core::store::{NoteStore, StoreError};
 
 mod common;
@@ -53,6 +55,120 @@ fn duplicate_id_is_rejected() {
         Err(StoreError::DuplicateId(id)) => assert_eq!(id, "dup"),
         other => panic!("expected DuplicateId, got {other:?}"),
     }
+}
+
+#[test]
+fn two_connections_reject_a_stale_body_write_without_losing_the_first_edit() {
+    // GUI and CLI hold distinct SQLite connections to the same data directory.
+    // Both read the original note; the second writer must not replace the first
+    // writer's document with a stale hydrate/reconcile result.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("kiem.db");
+    let mut first = NoteStore::open(&db_path).unwrap();
+    let id = first.create_note("# Shared", DID).unwrap().id;
+    let mut second = NoteStore::open(&db_path).unwrap();
+
+    let first_read = first.get_note_with_version(&id).unwrap().unwrap();
+    let second_read = second.get_note_with_version(&id).unwrap().unwrap();
+    assert_eq!(first_read.version, second_read.version);
+    assert_eq!(first_read.note.body.as_str(), "# Shared");
+    assert_eq!(second_read.note.body.as_str(), "# Shared");
+
+    first
+        .update_note_if_version(&id, "# First writer", &first_read.version)
+        .unwrap();
+    assert!(matches!(
+        second.update_note_if_version(&id, "# Stale second writer", &second_read.version),
+        Err(StoreError::VersionMismatch { .. })
+    ));
+
+    assert_eq!(
+        second.get_note(&id).unwrap().unwrap().body.as_str(),
+        "# First writer"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn open_dir_repairs_existing_data_directory_to_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("default-data");
+    std::fs::create_dir(&data_dir).unwrap();
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    NoteStore::open_dir(&data_dir).unwrap();
+
+    assert_eq!(
+        std::fs::metadata(&data_dir).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "the on-disk data directory must not expose notes or sync metadata"
+    );
+}
+
+#[test]
+fn incoming_document_retries_after_a_second_connection_writes() {
+    // The sync connection loaded the original Automerge document before this
+    // local CLI/GUI connection wrote. Persisting the incoming document must
+    // merge it with the newer row rather than replace the local edit.
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("kiem.db");
+    let note = NoteDoc::new_with(
+        "shared".to_owned(),
+        "# Shared\n\nbase",
+        DID,
+        "2026-06-12T10:00:00Z".to_owned(),
+    );
+    let mut sync_store = NoteStore::open(&db_path).unwrap();
+    sync_store.insert_note(&note).unwrap();
+    let mut local_store = NoteStore::open(&db_path).unwrap();
+
+    // This is the remote document after it received the original snapshot and
+    // made an offline edit. Load the actual stored CRDT history before editing;
+    // a fresh `insert_note` would make an unrelated document with the same id.
+    let mut remote_store = NoteStore::open_in_memory().unwrap();
+    let mut remote_base = AutoCommit::load(
+        &sync_store
+            .get_doc_bytes("shared")
+            .unwrap()
+            .expect("original note bytes"),
+    )
+    .unwrap();
+    remote_store.put_doc(&mut remote_base).unwrap();
+    remote_store
+        .update_note("shared", "# Shared\n\nbase\nremote sync edit")
+        .unwrap();
+    let mut incoming = AutoCommit::load(
+        &remote_store
+            .get_doc_bytes("shared")
+            .unwrap()
+            .expect("remote note bytes"),
+    )
+    .unwrap();
+
+    // Deterministic interleaving: the local write lands after the sync side
+    // acquired the old incoming document, before it persists that document.
+    local_store
+        .update_note("shared", "# Shared\n\nbase\nlocal GUI edit")
+        .unwrap();
+    sync_store.put_doc_deferred(&mut incoming).unwrap();
+
+    let body = local_store
+        .get_note("shared")
+        .unwrap()
+        .expect("note survives")
+        .body
+        .as_str()
+        .to_owned();
+    assert!(
+        body.contains("local GUI edit"),
+        "local change was overwritten: {body}"
+    );
+    assert!(
+        body.contains("remote sync edit"),
+        "incoming change was lost: {body}"
+    );
 }
 
 #[test]

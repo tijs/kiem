@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed: concurrent GUI, CLI, and sync edits to the same note could silently overwrite one another. Note mutations now use Automerge version tokens and SQLite compare-and-swap protection; stale GUI drafts are rejected and retained for manual conflict resolution, while incoming sync documents merge against the latest local state and retry after races.
+- Fixed: the default data directory and persisted identity/sync metadata could inherit permissive filesystem modes. Unix installations now enforce owner-only permissions for the data directory and sensitive files, repairing existing identity keys and metadata without rotating device identities.
+- Fixed: simultaneous pairing or unpairing operations could lose trust-list entries or expose partially-written state. Known-peer updates are now serialized and atomically replaced.
+
 ## 0.4.0 - 2026-08-28
 
 - Added: clicking a hashtag in a note now selects that tag in the sidebar and shows its notes. Project hashtags such as `#proj/kiem_app` select the matching project, and hashtags show a pointing-hand cursor on hover.

@@ -9,6 +9,7 @@ mod mesh;
 mod names;
 mod peers;
 mod session;
+mod storage;
 
 pub use endpoint::{accept, bind, connect, EndpointError, ALPN};
 pub use identity::{device_id, load_or_create, IdentityError};

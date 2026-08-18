@@ -45,7 +45,10 @@ pub enum MeshError {
     #[error("another kiem process is already syncing {data_dir}")]
     AlreadyRunning { data_dir: String },
     #[error("locking {path}: {source}")]
-    Lock { path: String, source: std::io::Error },
+    Lock {
+        path: String,
+        source: std::io::Error,
+    },
 }
 
 /// Notified as peers connect/disconnect. Default no-ops so a caller that only
@@ -226,11 +229,9 @@ impl Mesh {
 
     /// The pairing handshake for one connection: our own ticket to send, and a
     /// recorder that adds the peer's (id-checked) address to the known-peers
-    /// file. Adding is a no-op for an already-trusted peer.
-    ///
-    /// ponytail: the known-peers file has no cross-connection lock, so two
-    /// simultaneous first-contacts could race on the write — harmless for a
-    /// handful of personal devices; add a file lock if that ever changes.
+    /// file. `KnownPeers::add` serializes its own file transaction, so parallel
+    /// first contacts cannot overwrite one another. Adding is a no-op for an
+    /// already-trusted peer.
     fn peer_handshake(self: &Arc<Self>) -> PeerHandshake {
         let peers_path = self.data_dir.join(PEERS_FILE);
         let data_dir = self.data_dir.clone();
