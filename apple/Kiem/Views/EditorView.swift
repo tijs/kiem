@@ -30,7 +30,7 @@ struct EditorView: View {
                 description: Text("Select a note from the list, or create one with ⌘N.")
             )
         } else {
-            PulpEditorView(text: $model.editorText, controller: editorController)
+            PulpEditorView(text: $model.editorText, delegate: model, controller: editorController)
                 .id(model.selectedNoteID) // fresh editor per note
                 .onChange(of: model.editorText) {
                     model.editorTextDidChange()

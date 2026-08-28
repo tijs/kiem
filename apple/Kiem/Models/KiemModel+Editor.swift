@@ -1,5 +1,6 @@
 import Foundation
 import KiemKit
+import Pulp
 
 /// The editor buffer: the one piece of state Swift owns while a note is open,
 /// and the debounced write-back that persists it. The buffer itself
@@ -90,4 +91,16 @@ extension KiemModel {
     /// so calls land — and their results apply — in issue order, the same
     /// strict ordering the old synchronous calls had (Swift actors give no
     /// such guarantee).
+}
+
+/// Tapping a `#hashtag` in the editor selects it in the sidebar, mirroring the
+/// project breadcrumb's `openProject`. Edits do *not* come through
+/// `didApplyEdit` — the app tracks them via the `$model.editorText` binding —
+/// but the protocol requires the method, so it stays a no-op.
+extension KiemModel: PulpEditorDelegate {
+    func editor(_ editor: PulpEditorProtocol, didApplyEdit edit: TextEdit) {}
+
+    func editor(_ editor: PulpEditorProtocol, didTapHashtag tag: String) {
+        selection = tag.hasPrefix(Self.projectTagPrefix) ? .project(tag) : .tag(tag)
+    }
 }
