@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-08-28
+
+- Added: clicking a hashtag in a note now selects that tag in the sidebar and shows its notes. Project hashtags such as `#proj/kiem_app` select the matching project, and hashtags show a pointing-hand cursor on hover.
+
 ## 0.3.1 - 2026-08-16
 
 - Changed: pairing is now explicit. Opening Sync settings no longer makes this Mac discoverable; pairing starts from a dedicated sheet that shows the QR code, paste field, expiry countdown, and a shortened device id to compare with the approval prompt on the other device.
