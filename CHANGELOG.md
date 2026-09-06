@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-09-06
+
+- Changed: the iOS app is no longer a stub. It now opens the same Rust-backed Kiem store, shows the note list and editor, and has an explicit pairing screen (a QR code, paste field, expiry countdown, and a shortened device id to compare with the approval prompt on the other device) that is only discoverable while the pairing sheet is open. Sync soundly pauses when the app leaves the foreground and re-arms on return, and pending edits are flushed before the process can be suspended.
 - Fixed: concurrent GUI, CLI, and sync edits to the same note could silently overwrite one another. Note mutations now use Automerge version tokens and SQLite compare-and-swap protection; stale GUI drafts are rejected and retained for manual conflict resolution, while incoming sync documents merge against the latest local state and retry after races.
 - Fixed: the default data directory and persisted identity/sync metadata could inherit permissive filesystem modes. Unix installations now enforce owner-only permissions for the data directory and sensitive files, repairing existing identity keys and metadata without rotating device identities.
 - Fixed: simultaneous pairing or unpairing operations could lose trust-list entries or expose partially-written state. Known-peer updates are now serialized and atomically replaced.
+- Added: tapping a `#hashtag` in the editor selects it in the sidebar, mirroring the project breadcrumb.
 
 ## 0.4.0 - 2026-08-28
 
