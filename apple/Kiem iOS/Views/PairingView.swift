@@ -6,10 +6,15 @@ import UIKit
 /// Sync settings pane). Uses the existing `KiemStore`/iRoH pairing surface —
 /// no second networking path.
 ///
-/// The sheet's lifetime *is* the pairing window: it arms on appear and closes
-/// on dismiss, so this device can never be discoverable without the sheet
-/// saying so. Trust is reciprocal — pairing one side pairs both — so there is
-/// no mode to pick.
+/// Pairing is deliberately a one-time/infrequent task, so this view is *not*
+/// the Sync button's destination. It is reached only by navigating through the
+/// status screen's "Set Up New Device" action (see `SyncStatusView`), so it is
+/// presented as a pushed page inside that sheet's `NavigationStack` — not as a
+/// sheet of its own. Its appearance *is* the pairing window: reaching this
+/// page explicitly arms the window on appear and closes it on disappear, so
+/// this device can never be discoverable without the user having asked to set
+/// up a device. Trust is reciprocal — pairing one side pairs both — so there
+/// is no mode to pick.
 struct PairingView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: KiemModel
@@ -31,8 +36,7 @@ struct PairingView: View {
     @State private var codeCopied = false
 
     var body: some View {
-        NavigationStack {
-            Form {
+        Form {
                 Section("This device") {
                     thisDeviceRow
                 }
@@ -81,20 +85,19 @@ struct PairingView: View {
                 Section("Sync status") {
                     LabeledContent("Connected peers", value: "\(model.connectedPeers.count) / \(model.knownPeers.count)")
                     if model.connectedPeers.isEmpty {
-                        Text("Sync runs while the app is in the foreground.")
+                        // Honest, mechanism-aware copy: a full continued-processing
+                        // handoff keeps pairing discoverable in the background,
+                        // the brief fallback only grants a short grace period,
+                        // and with no background session sync is foreground-only.
+                        // Never promises five background minutes on a fallback.
+                        Text(KiemModel.pairingBackgroundCopy(for: model.activeBackgroundSessionKind))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
-            .navigationTitle("Sync & Pairing")
+            .navigationTitle("Set Up New Device")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
         .onAppear {
             model.armPairingWindow()
         }
@@ -117,7 +120,15 @@ struct PairingView: View {
             // teardown — routing the decision through the model here is the
             // safe default so the blocked sync thread can never be orphaned.
             model.resolvePairing(false)
-            model.closePairingWindow()
+            // Closing the window is a *foreground* dismissal. If a bounded
+            // background pairing session is keeping the mesh discoverable so
+            // the user can paste the code on another device, a disappear here
+            // is the scene leaving — not the user closing the sheet. Closing
+            // would silently drop discovery mid-handoff, so defer to
+            // `handleSceneReturnedToForeground` / the window's own expiry.
+            if model.shouldClosePairingWindowOnDisappear() {
+                model.closePairingWindow()
+            }
             // Any error surface (rename/unpair/add failure) is scoped to this
             // sheet; clear it on the way out so it can't linger and resurface
             // in the underlying list alert after the sheet closes.
@@ -143,8 +154,6 @@ struct PairingView: View {
             try? await Task.sleep(for: .seconds(2.5))
             codeCopied = false
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
         // Unpairing is destructive enough to confirm — it can only be undone
         // by pairing again, which needs the other device in hand.
         .confirmationDialog(
@@ -164,8 +173,8 @@ struct PairingView: View {
             forgetMessage(peerId)
         }
         // An incoming device is asking to pair — the sync thread is blocked on
-        // this answer. Attached to the presented sheet (not the note list
-        // beneath it) so the prompt is visible above the Sync & Pairing sheet.
+        // this answer. Attached to the presented sheet (and its nested Set Up
+        // New Device page), so the prompt is visible above the status flow.
         // Dismissing without choosing denies (safe default).
         .alert(
             "Pair this device?",

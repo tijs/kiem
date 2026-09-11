@@ -34,17 +34,17 @@ struct Kiem_iOSApp: App {
             .onChange(of: scenePhase) { _, phase in
                 switch phase {
                 case .active:
-                    // Return-to-active: re-arm the sync mesh paused when the
-                    // scene left the foreground, and resume polling. Both are
-                    // idempotent, so repeated `.active` events are safe.
-                    model?.startSync()
-                    model?.beginForegroundPolling()
+                    // Return-to-active: release any bounded background pairing
+                    // session, re-arm the mesh if it was paused, and resume
+                    // polling. `startSync` is idempotent, so the mesh that was
+                    // kept discoverable through the background just continues.
+                    model?.handleSceneReturnedToForeground()
                 case .inactive, .background:
-                    // Persist any debounce-pending edit before the process can
-                    // be suspended, and stop the foreground sync mesh safely.
-                    model?.flushPendingEditBlocking()
-                    model?.pauseForegroundPolling()
-                    model?.stopSync()
+                    // Persist any debounce-pending edit, pause polling, then stop
+                    // the foreground sync mesh — UNLESS a pairing window is open,
+                    // in which case the mesh stays discoverable under a bounded
+                    // background request so the user can paste the code elsewhere.
+                    model?.handleSceneLeavingForeground()
                 default:
                     break
                 }

@@ -2,6 +2,42 @@ import Foundation
 import KiemKit
 import Pulp
 
+/// Policy for what should happen to the sync mesh when the scene leaves the
+/// foreground. Kept pure and unit-tested rather than buried in the UI, so
+/// backgrounding behaviour is a contract, not an accident of view lifecycle.
+///
+/// Only an *actively discoverable* pairing window justifies keeping the mesh
+/// running while backgrounded. Everything else tears it down exactly as before,
+/// so normal backgrounding never runs sync in the background.
+enum SceneBackgroundPolicy: Equatable {
+    /// Tear the mesh down (the normal, historical behaviour).
+    case stopSync
+    /// Keep the mesh running through a bounded background session so a pairing
+    /// code already on screen stays valid while the user pastes it elsewhere.
+    case keepMeshForPairing
+
+    static func action(pairingWindowActive: Bool) -> SceneBackgroundPolicy {
+        pairingWindowActive ? .keepMeshForPairing : .stopSync
+    }
+}
+
+/// User-facing pairing-state taxonomy: what the UI may honestly claim about
+/// background availability, derived entirely from the mechanism actually granted.
+/// A full continued-processing handoff legitimately spans the whole remaining
+/// window in the background; the brief fallback grants only a short, best-effort
+/// grace period (no hard OS guarantee, and never the full window); foreground-only
+/// grants nothing in the background.
+enum BackgroundPairingDisclosure: Equatable {
+    /// Full continued-processing handoff — discovery survives the whole window.
+    case continuedProcessing(remaining: Int)
+    /// Brief legacy fallback — a short grace period after backgrounding. Carries
+    /// no window remaining value: the fallback must never report (or expose) the
+    /// full pairing duration as a fallback budget.
+    case briefFallback
+    /// No background session — foreground sync only.
+    case foregroundOnly
+}
+
 /// Joining the P2P mesh and pairing devices: everything the pairing/sync UI
 /// drives. Same behaviour as the macOS `KiemModel+Sync.swift`; no AppKit.
 extension KiemModel {
@@ -168,7 +204,12 @@ extension KiemModel {
         String(authorDid.prefix(12))
     }
 
-    private static let pairingWindowSecs: UInt64 = 120
+    /// How long the Rust-side pairing window stays discoverable (seconds).
+    /// Five minutes: long enough for a realistic copy-the-code → background →
+    /// paste-on-another-device handoff. `nonisolated static let` so unit tests
+    /// can read it off the main actor, and `internal` so they can pin the
+    /// duration the scene-background policy depends on.
+    nonisolated static let pairingWindowSecs: UInt64 = 300
 
     /// Open the pairing window and start showing a code. The arm is optimistically
     /// reflected in `pairingWindowRemaining` so the sheet doesn't flash a spinner;
@@ -189,6 +230,10 @@ extension KiemModel {
     }
 
     func closePairingWindow() {
+        // Release any active background pairing session promptly: the window is
+        // closed, so there's nothing left to keep discoverable in the background.
+        // Idempotent, so closing a window that was never backgrounded is a no-op.
+        endActiveBackgroundSession()
         wantsPairingWindow = false
         // Invalidate any in-flight ticket fetch / retry: once the sheet is closed
         // a previously-started fetch must not resurrect a code.
@@ -346,6 +391,184 @@ extension KiemModel {
             knownPeers = (try? store.knownPeers()) ?? []
         }
     }
+
+    // MARK: Scene lifecycle (background/foreground)
+
+    /// The scene left the foreground (inactive or background). Pauses polling
+    /// and flushes pending edits as before; whether the mesh also stops now is
+    /// decided by `SceneBackgroundPolicy`. While a pairing window is
+    /// discoverable the mesh is kept up under a bounded background-execution
+    /// request, so the user can background Kiem to paste the code on another
+    /// device and still be found.
+    func handleSceneLeavingForeground() {
+        // Flag the transition first so a sheet `.onDisappear` delivered while
+        // the scene is leaving (even before the bounded session below has been
+        // armed/stored) never misreads itself as a foreground dismissal.
+        sceneIsLeavingForeground = true
+        pauseForegroundPolling()
+        flushPendingEditBlocking()
+        switch SceneBackgroundPolicy.action(pairingWindowActive: pairingWindowIsActive) {
+        case .stopSync:
+            // Normal backgrounding: end any stale bounded session and stop.
+            endActiveBackgroundSession()
+            stopSync()
+        case .keepMeshForPairing:
+            // Nothing to keep up (mesh already off): leave it off.
+            guard isSyncRunning else { return }
+            startBoundedBackgroundPairingSession()
+        }
+    }
+
+    /// The scene returned to the foreground. Ends any bounded background
+    /// pairing session (the mesh is already running — `startSync` is
+    /// idempotent) and resumes foreground polling.
+    func handleSceneReturnedToForeground() {
+        sceneIsLeavingForeground = false
+        endActiveBackgroundSession()
+        startSync()
+        beginForegroundPolling()
+    }
+
+    /// Whether a `PairingView` disappear should close the pairing window. The
+    /// explicit scene-transition flag is the **authoritative** distinction, not
+    /// the presence of a background-session handle:
+    ///
+    /// - While the scene is leaving the foreground, a disappear is the scene
+    ///   transitioning out, NOT the user dismissing. Discovery must never be
+    ///   dropped mid-handoff, so it stays open for the whole leaving transition
+    ///   — even before the bounded session handle has been armed/stored (the
+    ///   onDisappear-before-session-arm ordering).
+    /// - Only a real (foreground) dismissal closes it — i.e. the scene is not
+    ///   leaving. And a genuine foreground dismissal must close even if a stale
+    ///   active handle is still held; the handle must not mask the dismissal.
+    func shouldClosePairingWindowOnDisappear() -> Bool {
+        !sceneIsLeavingForeground
+    }
+
+    /// Keep the mesh discoverable through a bounded background request. The
+    /// session never outlives the pairing window's own deadline; if the system
+    /// grants no background time, fall back to closing the window and stopping
+    /// synchronously so the mesh is never left running backgrounded unwatched.
+    private func startBoundedBackgroundPairingSession() {
+        // Idempotent across the scene's .inactive → .background transition,
+        // which delivers this on every phase. A session already being kept
+        // alive must stay untouched: ending it here and re-arming would cancel
+        // the in-flight continued-processing task, re-submit it, and restart
+        // the deadline — a redundant re-arm, not a no-op. Keep the first one.
+        guard activeBackgroundSession == nil else { return }
+        // Entering the keep-discoverable flow (either the full continued
+        // processing handoff or the brief fallback). Armed before `begin` so
+        // `finishBackgroundPairingSession` can tell a real teardown from a
+        // stale onExpire that arrives after an early release.
+        pairingBackgroundClientActive = true
+        // Cap the session to the window's remaining time (defaulting to the
+        // full window) so we never keep the mesh alive past its deadline.
+        let remaining = pairingWindowRemaining ?? Int(Self.pairingWindowSecs)
+        guard remaining > 0 else {
+            finishBackgroundPairingSession()
+            return
+        }
+        guard let handle = backgroundTaskProvider.begin(durationSecs: remaining, onExpire: { [weak self] in
+            self?.finishBackgroundPairingSession()
+        }) else {
+            // No budget granted: stop now rather than run unwatched in background.
+            finishBackgroundPairingSession()
+            return
+        }
+        activeBackgroundSession = handle
+        // Backstop: even if the system budgets more than the window has left,
+        // never keep the mesh alive past the pairing deadline.
+        pairingBackgroundDeadline?.cancel()
+        pairingBackgroundDeadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(remaining))
+            self?.finishBackgroundPairingSession()
+        }
+    }
+
+    /// Deterministic end of a background pairing session. A stale `onExpire`
+    /// that arrives after the session was already released (early foreground
+    /// return, explicit window close) must NOT tear down the now-foreground
+    /// window/mesh — only a flow that is genuinely still keeping a session
+    /// alive resolves the approval gate, closes the window and stops the mesh.
+    /// Idempotent — safe to call from the system's expiration handler, our
+    /// own deadline, or an explicit close.
+    private func finishBackgroundPairingSession() {
+        guard pairingBackgroundClientActive else {
+            // Late/stale callback from an already-ended session: release any
+            // straggling handle but leave the foreground window/mesh untouched.
+            endActiveBackgroundSession()
+            return
+        }
+        // `endActiveBackgroundSession` clears the client-active flag; the guard
+        // above already confirmed we're tearing down, so proceed with the
+        // full cleanup.
+        endActiveBackgroundSession()
+        resolvePairing(false)
+        closePairingWindow()
+        stopSync()
+    }
+
+    /// Release the active bounded background task and its deadline, if any.
+    /// `internal` (not `private`) because `shutDown()` in `KiemModel.swift`
+    /// calls it from a different file.
+    func endActiveBackgroundSession() {
+        pairingBackgroundDeadline?.cancel()
+        pairingBackgroundDeadline = nil
+        activeBackgroundSession?.end()
+        activeBackgroundSession = nil
+        // Leaving the keep-discoverable flow: a late onExpire is now a no-op.
+        pairingBackgroundClientActive = false
+    }
+
+    // MARK: Honest background disclosure
+
+    /// The mechanism keeping the pairing mesh discoverable in the background,
+    /// if any. Drives the user-facing copy so the UI never promises a full
+    /// five-minute handoff when only the brief fallback (or nothing) is active.
+    var activeBackgroundSessionKind: BackgroundSessionKind? {
+        activeBackgroundSession?.kind
+    }
+
+    /// What the UI may honestly claim about background availability right now,
+    /// derived purely from the granted mechanism and remaining window.
+    var pairingBackgroundDisclosure: BackgroundPairingDisclosure {
+        Self.pairingBackgroundDisclosure(kind: activeBackgroundSessionKind, remaining: pairingWindowRemaining)
+    }
+
+    /// Pure: maps a granted mechanism + remaining window to the honest
+    /// disclosure. `nonisolated` so unit tests can drive it off the main actor.
+    nonisolated static func pairingBackgroundDisclosure(
+        kind: BackgroundSessionKind?,
+        remaining: Int?
+    ) -> BackgroundPairingDisclosure {
+        switch kind {
+        case .continuedProcessing:
+            // Only the full continued-processing handoff may truthfully report
+            // the remaining window as background time.
+            return .continuedProcessing(remaining: remaining ?? Int(pairingWindowSecs))
+        case .briefFallback:
+            // The brief fallback is a short, best-effort grace period — it
+            // never reports (and so can never expose) the full-window duration
+            // as a fallback budget.
+            return .briefFallback
+        case nil:
+            return .foregroundOnly
+        }
+    }
+
+    /// Privacy-safe, mechanism-honest status copy for the pairing/sync UI.
+    /// No tickets, endpoint IDs, credentials, or connection strings are ever
+    /// included. `nonisolated static` so unit tests can drive it.
+    nonisolated static func pairingBackgroundCopy(for kind: BackgroundSessionKind?) -> String {
+        switch kind {
+        case .continuedProcessing:
+            return "Pairing stays discoverable in the background while you copy and paste its code."
+        case .briefFallback:
+            return "Pairing continues for only a short time after you leave Kiem; keep the pairing sheet open for the full window."
+        case nil:
+            return "Sync runs while the app is in the foreground."
+        }
+    }
 }
 
 /// A pending incoming pairing shown to the user as Allow/Deny. Holds the
@@ -380,7 +603,10 @@ final class ApprovalGate: @unchecked Sendable {
     /// Default upper bound on how long a pairing request may block the sync
     /// thread. If the pairing sheet is dismissed or the scene goes away, the
     /// request is treated as denied after this so the Rust caller can proceed.
-    static let defaultTimeout: TimeInterval = 120
+    /// Aligned with the five-minute pairing window: an approval that's genuinely
+    /// pending (a handoff kept discoverable through the background) deserves the
+    /// whole window to be answered, and never blocks the sync thread past it.
+    nonisolated static let defaultTimeout: TimeInterval = TimeInterval(KiemModel.pairingWindowSecs)
 
     private let timeout: TimeInterval
     private let semaphore = DispatchSemaphore(value: 0)

@@ -88,12 +88,13 @@ struct NoteListView: View {
             }
         }
         .sheet(isPresented: $showSync) {
-            PairingView(model: model)
+            SyncStatusView(model: model)
         }
         // Non-pairing error alert stays on the list. The pairing-request alert
-        // lives on the presented PairingView so it is visible above the Sync &
-        // Pairing sheet; this gated copy only fires when the sheet is closed,
-        // so the two can never present simultaneously.
+        // lives on PairingView (reached only through the status screen's "Set Up
+        // New Device" navigation) so it is visible above the Sync Status sheet;
+        // this gated copy only fires when the sheet is closed, so the two can
+        // never present simultaneously.
         .alert(
             "Kiem",
             isPresented: Binding(

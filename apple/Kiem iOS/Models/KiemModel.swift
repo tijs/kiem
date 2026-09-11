@@ -55,6 +55,32 @@ final class KiemModel {
     /// auto-refreshing an expired window forever.
     var wantsPairingWindow = false
 
+    /// Seam over iOS's background-execution requests used to keep the pairing
+    /// mesh discoverable while the scene is backgrounded. Defaults to the
+    /// shared production provider (iOS 26 `BGContinuedProcessingTask`, falling
+    /// back to the `UIApplication` bounded request); tests inject a spy.
+    var backgroundTaskProvider: any BackgroundTaskProviding = DefaultBackgroundSessionProvider.shared
+    /// The active bounded background request, if any (a pairing window is being
+    /// kept alive across a scene background).
+    var activeBackgroundSession: BackgroundTaskHandle?
+    /// Deadline that forcibly ends a bounded background pairing session once
+    /// the pairing window has no time left, so the mesh is never kept alive
+    /// past its discoverability deadline.
+    var pairingBackgroundDeadline: Task<Void, Never>?
+    /// Whether the scene is currently leaving the foreground (an explicit
+    /// transition begun by `handleSceneLeavingForeground`). Hardens
+    /// `shouldClosePairingWindowOnDisappear()` against the onDisappear-before-
+    /// session-arm ordering: a sheet disappearing while the scene is transitioning
+    /// out must never close the pairing window, even before the bounded session
+    /// handle has been stored. Cleared on return to foreground.
+    var sceneIsLeavingForeground = false
+    /// Whether the keep-discoverable-while-backgrounded flow is in progress. Set
+    /// when we intend to arm a background session; cleared when it ends. Lets
+    /// `finishBackgroundPairingSession` distinguish a genuine teardown from a
+    /// stale `onExpire` that arrives after an early foreground return / explicit
+    /// close — the latter must not tear down a now-foreground window and mesh.
+    var pairingBackgroundClientActive = false
+
     /// Serializes the Rust mesh start/stop lifecycle so a detached (queued) arm
     /// can never race a background stop, and a stale start can't tear down a
     /// newer mesh. Used by `startSync`/`stopSync` in `KiemModel+Sync.swift`
@@ -157,6 +183,9 @@ final class KiemModel {
 
     /// Tear down the poller and stop the mesh. Runs on the main actor.
     func shutDown() {
+        // Release any active bounded background pairing session first so its
+        // deadline task isn't left sleeping for the model's lifetime.
+        endActiveBackgroundSession()
         refreshTimer?.invalidate()
         refreshTimer = nil
         pendingEditTask?.cancel()

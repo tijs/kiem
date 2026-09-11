@@ -1,46 +1,38 @@
 import SwiftUI
 
-/// The note editor. For this first usable slice it is a focused native SwiftUI
-/// editor that edits the exact Markdown body and reuses Pulp's platform-neutral
-/// `ContentAnalyzer` to derive the live title/tags preview ("content-derivation
-/// parity" with what the Rust core re-derives at flush time).
+/// The note editor. Unlike the earlier plain-monospace `TextEditor`, it renders
+/// inline Markdown using Pulp's cross-platform `MarkdownTokenizer`/`MarkdownStyler`
+/// (via `MarkdownEditor`/`MarkdownEditorRenderer`), hiding syntax markers and
+/// styling headings/emphasis/code/links/lists so the document reads like the Mac
+/// Pulp editor. It edits the exact Markdown source, which rounds-trips through
+/// the model's debounced version-aware write.
 ///
-/// LIMITATION (recorded, not hidden): this is a plain Markdown-source editor,
-/// not a rich-rendering one. It does NOT have the full macOS Pulp rich-render
-/// parity (GFM table overlays, checkbox/attachment drawing, code-block
-/// backgrounds, marker-hiding). A full UIKit/TextKit 2 Pulp port is a follow-on
-/// slice; this fallback keeps the first usable app shippable and honest.
+/// Layout: no large duplicate title/header — the document owns the viewport, the
+/// inline navigation title carries the note title, and the note controls
+/// (todo/pin/delete) live in the top-right toolbar so they stay reachable when
+/// the keyboard is up (they are not in a bottom bar the keyboard would cover).
+/// A dedicated keyboard toolbar offers a Done action and compact metadata.
+/// The editor does not auto-focus on appear; the user taps to edit.
 struct EditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Bindable var model: KiemModel
     let noteID: String
 
-    @FocusState private var focused: Bool
-
     private var bodyBinding: Binding<String> {
         Binding(
             get: { model.editorText },
-            set: { model.editorText = $0; model.editorTextDidChange() }
+            set: { model.editorText = $0 }
         )
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            TextEditor(text: bodyBinding)
-                .focused($focused)
-                .font(.body.monospaced())
-                .autocorrectionDisabled()
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
-                .padding(8)
+        MarkdownEditor(text: bodyBinding) {
+            model.editorTextDidChange()
         }
         .navigationTitle(derivedTitle.isEmpty ? "Untitled" : derivedTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .bottomBar) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     toggleCheckboxOnCurrentLine()
                 } label: {
@@ -48,7 +40,7 @@ struct EditorView: View {
                 }
                 .accessibilityLabel("Toggle todo checkbox")
                 .accessibilityIdentifier("toggleTodoButton")
-                Spacer()
+
                 Button {
                     model.setPinned(noteID, pinned: !(model.selectedNote?.pinned ?? false))
                 } label: {
@@ -56,7 +48,7 @@ struct EditorView: View {
                 }
                 .accessibilityLabel((model.selectedNote?.pinned ?? false) ? "Unpin note" : "Pin note")
                 .accessibilityIdentifier("pinButton")
-                Spacer()
+
                 Button(role: .destructive) {
                     model.deleteNote(noteID)
                     dismiss()
@@ -67,9 +59,20 @@ struct EditorView: View {
                 .accessibilityIdentifier("trashButton")
             }
         }
+        .overlay(alignment: .top) {
+            if model.rejectedEditorDraft != nil {
+                Label("This note changed elsewhere. Your stale edit wasn't applied; the latest body was reloaded.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity)
+                    .background(.thinMaterial)
+            }
+        }
         .onAppear {
+            // Select (and load) the note — deliberately NOT auto-focusing the
+            // editor on appear.
             model.selectedNoteID = noteID
-            focused = true
         }
         .onDisappear {
             model.flushPendingEdit()
@@ -80,55 +83,8 @@ struct EditorView: View {
         KiemModel.derive(titleFrom: model.editorText)
     }
 
-    private var derivedTags: [String] {
-        KiemModel.derive(tagsFrom: model.editorText)
-    }
-
     private var hasUncheckedTodos: Bool {
         KiemModel.derive(hasUncheckedTodosFrom: model.editorText)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(derivedTitle.isEmpty ? "Untitled" : derivedTitle)
-                .font(.title3.weight(.semibold))
-                .textSelection(.enabled)
-            if !derivedTags.isEmpty {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 60), spacing: 6, alignment: .leading)],
-                    alignment: .leading,
-                    spacing: 6
-                ) {
-                    ForEach(derivedTags, id: \.self) { tag in
-                        Text("#\(tag)")
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.tint.opacity(0.12), in: Capsule())
-                            .foregroundStyle(.tint)
-                            .font(.caption)
-                    }
-                }
-            }
-            HStack {
-                Text(hasUncheckedTodos ? "Has open todos" : "No open todos")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if let version = model.loadedVersion {
-                    Text("v\(version.prefix(8))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            if model.rejectedEditorDraft != nil {
-                Label("This note changed elsewhere. Your stale edit wasn't applied; the latest body was reloaded.", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Toggle a todo checkbox on the current line (basic todo editing). Runs
@@ -140,7 +96,7 @@ struct EditorView: View {
         // Simple line-based toggle on editorText.
         let lines = model.editorText.split(separator: "\n", omittingEmptySubsequences: false)
         // We only target the first unchecked line for this slice (multi-line
-        // caret tracking is beyond the fallback editor's scope).
+        // caret tracking is beyond this editor's scope).
         if let idx = lines.firstIndex(where: { $0.hasPrefix("- [ ]") }) {
             var copy = lines
             copy[idx] = Substring("- [x]\(lines[idx].dropFirst("- [ ]".count))")
