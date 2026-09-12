@@ -4,6 +4,22 @@
 //! lives in `kiem-sync`, shared with the Swift app's FFI bridge. This module
 //! just owns the CLI-specific bits: opening the store, the status-file
 //! heartbeat for `kiem sync-status`, and stderr logging.
+//!
+//! ## Automated-test coverage boundary
+//!
+//! The CLI's real multi-process convergence path — two `kiem sync` daemons
+//! pairing and syncing over real iroh discovery/relay — is intentionally
+//! untested in automated tests. The test that covered it
+//! (`crates/kiem-cli/tests/sync_test.rs`) was removed: discovery/relay
+//! resolution and process startup timing are nondeterministic, so its
+//! 45-second convergence deadline failed intermittently even though sync
+//! itself worked. The sync implementation remains covered by deterministic
+//! tests: `kiem-core`'s `SyncEngine` integration tests
+//! (`crates/kiem-core/tests/sync_engine.rs`, two in-memory peers, no
+//! transport) and `kiem-sync`'s real-connection loopback and pairing tests
+//! (`crates/kiem-sync/tests/loopback.rs`, `pairing.rs`). For manual
+//! verification of the multi-process path: `kiem pair` two throwaway data
+//! dirs, run `kiem sync` in each, and create a note on both sides.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

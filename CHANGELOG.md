@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-09-12
+
+- Changed: `kiem todos` and `kiem todo check`/`uncheck` now use 1-based
+  checkbox indexes (1 = first checkbox), matching what the list displays.
+  The CLI rejects index 0 with a clear error and converts to the core
+  store's zero-based positions internally; the store and FFI indexing is
+  unchanged.
+- Removed: the real-network CLI sync integration test
+  (`crates/kiem-cli/tests/sync_test.rs`), which routinely failed because
+  iroh discovery/relay and multi-process startup timing are
+  nondeterministic. Deterministic sync coverage remains: the
+  `SyncEngine` integration tests in `kiem-core` and the loopback and
+  pairing tests in `kiem-sync`.
+
 ## 0.4.1 - 2026-09-06
 
 - Changed: the iOS app is no longer a stub. It now opens the same Rust-backed Kiem store, shows the note list and editor, and has an explicit pairing screen (a QR code, paste field, expiry countdown, and a shortened device id to compare with the approval prompt on the other device) that is only discoverable while the pairing sheet is open. Sync soundly pauses when the app leaves the foreground and re-arms on return, and pending edits are flushed before the process can be suspended.

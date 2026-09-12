@@ -1,6 +1,11 @@
 //! The todo commands. A todo is a `- [ ]` line in a note body, addressed by
 //! its position among all checkbox lines — including checked ones, so
 //! checking one item never renumbers the others.
+//!
+//! The CLI presents and accepts these positions **1-based** (1 = first
+//! checkbox, as shown by `kiem todos`). The core store addresses checkboxes
+//! zero-based, so the CLI converts at this boundary and never leaks the
+//! internal numbering.
 
 use anyhow::{bail, Context, Result};
 use kiem_core::store::NoteStore;
@@ -15,12 +20,18 @@ pub fn list(store: &NoteStore, project_override: Option<String>, as_json: bool) 
     let tag = project::resolve(&cwd, project_override.as_deref())?;
     let todos = store.list_todo_items_for_tag(&tag)?;
     if as_json {
-        print_json(&serde_json::to_value(&todos)?)?;
+        // Human-facing contract: 1-based indexes matching what `todo check`
+        // accepts (the core store's zero-based positions stay internal).
+        let items: Vec<_> = todos
+            .iter()
+            .map(|t| json!({"note_id": t.note_id, "index": t.index + 1, "text": t.text}))
+            .collect();
+        print_json(&serde_json::Value::Array(items))?;
     } else if todos.is_empty() {
         println!("(no open todos in {tag})");
     } else {
         for t in &todos {
-            println!("{}  {}  {}", t.note_id, t.index, t.text);
+            println!("{}  {}  {}", t.note_id, t.index + 1, t.text);
         }
     }
     Ok(())
@@ -47,8 +58,18 @@ pub fn set(store: &mut NoteStore, action: TodoAction, as_json: bool) -> Result<(
         TodoAction::Check { note_id, indices } => (note_id, indices, true),
         TodoAction::Uncheck { note_id, indices } => (note_id, indices, false),
     };
+    // The CLI addresses checkboxes 1-based (the numbering `kiem todos`
+    // prints); the core store is zero-based, so convert here at the
+    // CLI/store boundary and keep 0 from silently addressing the first box.
+    if let Some(zero) = indices.iter().find(|&&i| i == 0) {
+        bail!(
+            "invalid todo index {zero}: indexes are 1-based \
+             (1 = first checkbox, as shown by `kiem todos`)"
+        );
+    }
+    let core_indices: Vec<usize> = indices.iter().map(|&i| i - 1).collect();
     let meta = store
-        .set_todos_checked(&note_id, &indices, checked)
+        .set_todos_checked(&note_id, &core_indices, checked)
         .map_err(not_found_context(&note_id))?;
     if as_json {
         print_json(&json!({"id": meta.id, "indices": indices, "checked": checked}))?;

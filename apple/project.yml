@@ -88,8 +88,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.tijs.kiem
-        MARKETING_VERSION: "0.4.1"
-        CURRENT_PROJECT_VERSION: "26"
+        MARKETING_VERSION: "0.4.2"
+        CURRENT_PROJECT_VERSION: "27"
         MACOSX_DEPLOYMENT_TARGET: "26.0"
         SWIFT_VERSION: "6"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -170,8 +170,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.tijs.kiem.ios
-        MARKETING_VERSION: "0.4.1"
-        CURRENT_PROJECT_VERSION: "8"
+        MARKETING_VERSION: "0.4.2"
+        CURRENT_PROJECT_VERSION: "9"
         SWIFT_VERSION: "6"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # CODE_SIGN_IDENTITY is empty (not the XcodeGen default "iPhone

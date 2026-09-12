@@ -87,11 +87,11 @@ fn agent_loop_add_note_list_todos_then_check() {
     let items = todos.as_array().unwrap();
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["note_id"], note_id.as_str());
-    assert_eq!(items[0]["index"], 0);
+    assert_eq!(items[0]["index"], 1);
 
     // Check the first todo → it drops out of the aggregate.
     kiem(data.path())
-        .args(["todo", "check", &note_id, "0"])
+        .args(["todo", "check", &note_id, "1"])
         .assert()
         .success();
     let after = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
@@ -117,14 +117,63 @@ fn todo_check_accepts_multiple_stable_indices() {
     let note_id = note["id"].as_str().unwrap().to_owned();
 
     kiem(data.path())
-        .args(["todo", "check", &note_id, "0", "2"])
+        .args(["todo", "check", &note_id, "1", "3"])
         .assert()
         .success();
     let after = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
     let items = after.as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["index"], 1);
+    assert_eq!(items[0]["index"], 2);
     assert_eq!(items[0]["text"], "second");
+}
+
+#[test]
+fn todo_list_and_check_are_one_based_and_reject_zero() {
+    let data = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+    kiem_in(data.path(), repo.path())
+        .args(["project", "add", "Demo"])
+        .assert()
+        .success();
+
+    let note = json_out(kiem_in(data.path(), repo.path()).args([
+        "note",
+        "add",
+        "# Tasks\n- [ ] first\n- [ ] second\n- [ ] third",
+        "--json",
+    ]));
+    let note_id = note["id"].as_str().unwrap().to_owned();
+
+    // Displayed index and accepted address use the same 1-based numbering.
+    let todos = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
+    let indexes: Vec<i64> = todos
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["index"].as_i64().unwrap())
+        .collect();
+    assert_eq!(indexes, vec![1, 2, 3], "todos are listed 1-based");
+
+    // Pass the displayed index straight back: item 2 is "second".
+    kiem(data.path())
+        .args(["todo", "check", &note_id, "2"])
+        .assert()
+        .success();
+    let left = json_out(kiem_in(data.path(), repo.path()).args(["todos", "--json"]));
+    let left = left.as_array().unwrap();
+    assert_eq!(left.len(), 2);
+    assert_eq!(left[0]["text"], "first");
+    assert_eq!(left[0]["index"], 1);
+    assert_eq!(left[1]["text"], "third");
+    assert_eq!(left[1]["index"], 3);
+
+    // 0 addresses no checkbox; reject it clearly instead of silently
+    // addressing the first item as the old zero-based contract did.
+    kiem(data.path())
+        .args(["todo", "check", &note_id, "0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("1-based"));
 }
 
 #[test]
@@ -169,7 +218,8 @@ fn todo_add_appends_one_item_in_a_single_command() {
     ]));
     let id = note["id"].as_str().unwrap().to_owned();
 
-    // One command, no whole-body rewrite — the new item is addressable as index 1.
+    // One command, no whole-body rewrite — the new item is addressable as
+    // index 2 (1-based; indexes start at 1 = "first").
     kiem(data.path())
         .args(["todo", "add", &id, "second"])
         .assert()

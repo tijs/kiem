@@ -95,13 +95,13 @@ pub enum Command {
         #[command(subcommand)]
         action: ProjectAction,
     },
-    /// List the current project's open todos (note-id, index, text)
+    /// List the current project's open todos (note-id, 1-based index, text)
     Todos {
         /// Override the resolved project (a name or proj/<slug>)
         #[arg(long)]
         project: Option<String>,
     },
-    /// Check or uncheck a todo by its (note-id, index) address
+    /// Check or uncheck a todo by its (note-id, 1-based index) address
     Todo {
         #[command(subcommand)]
         action: TodoAction,
@@ -247,14 +247,14 @@ pub enum TodoAction {
         note_id: String,
         text: String,
     },
-    /// Mark one or more todos done by their stable checkbox indices
+    /// Mark one or more todos done by their stable, 1-based checkbox indices (1 = first)
     Check {
         #[arg(value_parser = note_ref)]
         note_id: String,
         #[arg(value_name = "INDEX", num_args = 1..)]
         indices: Vec<usize>,
     },
-    /// Mark one or more todos not done by their stable checkbox indices
+    /// Mark one or more todos not done by their stable, 1-based checkbox indices (1 = first)
     Uncheck {
         #[arg(value_parser = note_ref)]
         note_id: String,

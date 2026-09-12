@@ -196,7 +196,7 @@ fn note_ref_is_accepted_in_every_id_position() {
 
     // Todo commands also accept the reference.
     kiem(dir.path())
-        .args(["todo", "check", &ref_, "0"])
+        .args(["todo", "check", &ref_, "1"])
         .assert()
         .success();
     let todos = json_out(kiem_in(dir.path(), repo.path()).args(["todos", "--json"]));
