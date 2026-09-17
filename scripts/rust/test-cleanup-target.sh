@@ -28,15 +28,39 @@ check() { # check <description> <result>
 if "$SCRIPT" --bogus >/dev/null 2>&1; then bogus_rc=0; else bogus_rc=$?; fi
 [[ $bogus_rc -ne 0 ]]; check "cleanup-target.sh --bogus exits non-zero" $?
 
-# --- 2. dry run: lists candidates, deletes nothing ----------------------
+# --- 2. dry run: reports the live state honestly, deletes nothing ---------
 out="$("$SCRIPT" --dry-run)"
 check "dry-run exits 0" $?
+
+# Mirror the script's own candidate sources so the assertions match the live
+# state: before any cleanup there are incremental caches + cross trees + tmp;
+# after a cleanup there are none (the zero-candidate no-op path).
+has_candidates=false
+if find "$ROOT_DIR/target" -type d -name incremental -print 2>/dev/null | grep -q . \
+  || [[ -d "$ROOT_DIR/target/aarch64-apple-ios" ]] \
+  || [[ -d "$ROOT_DIR/target/tmp" ]]; then
+  has_candidates=true
+fi
+
 ok=0
 [[ "$out" == *"Dry run"* ]] || ok=1
-for needle in "incremental" "target/debug/" "target/release/" "aarch64-apple-ios"; do
+for needle in "target/debug/" "target/release/"; do
   [[ "$out" == *"$needle"* ]] || ok=1
 done
-check "dry-run output names incremental caches, retained dirs, cross targets" "$ok"
+if [[ "$has_candidates" == true ]]; then
+  for needle in "incremental" "aarch64-apple-ios"; do
+    [[ "$out" == *"$needle"* ]] || ok=1
+  done
+else
+  # Explicit empty-candidate dry-run (post-cleanup no-op): must still list the
+  # zero set, stay dry, and report a 0-byte total — never an unbound-variable
+  # crash (macOS Bash 3.2 + set -u on an empty array).
+  [[ "$out" == *"0 disposable candidates"* ]] || ok=1
+  [[ "$out" == *"(none)"* ]] || ok=1
+  [[ "$out" == *"Total removable: 0 KiB"* ]] || ok=1
+  [[ "$out" == *"0 bytes deleted"* ]] || ok=1
+fi
+check "dry-run output matches live target/ state (candidates present: $has_candidates)" "$ok"
 
 if [[ -d "$ROOT_DIR/target" ]]; then
   before="$(du -sk "$ROOT_DIR/target" | awk '{print $1}')"

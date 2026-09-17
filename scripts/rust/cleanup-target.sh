@@ -89,26 +89,39 @@ while IFS= read -r d; do
 done < <(find "$TARGET_DIR" -type d -name incremental -print 2>/dev/null | sort)
 
 cross_candidates=()
-for t in "${CROSS_TRIPLES[@]}"; do
-  if [[ -d "$TARGET_DIR/$t" ]]; then
-    cross_candidates+=("$TARGET_DIR/$t")
-  fi
-done
+if (( ${#CROSS_TRIPLES[@]} > 0 )); then
+  for t in "${CROSS_TRIPLES[@]}"; do
+    if [[ -d "$TARGET_DIR/$t" ]]; then
+      cross_candidates+=("$TARGET_DIR/$t")
+    fi
+  done
+fi
 
 # Incremental dirs nested inside a cross-target tree are removed with that
 # tree — keep only the ones that are standalone (host target/debug|release)
 # so the list is non-overlapping and the freed total is not double-counted.
+#
+# macOS ships Bash 3.2, where `set -u` treats "${arr[@]}" on an empty array as
+# an unbound-variable error (fixed only in Bash 4.4). Every array expansion
+# here is guarded by an explicit length check so the script stays a clean no-op
+# after a previous cleanup has already removed all candidates.
 candidates=()
-for d in "${incremental_dirs[@]}"; do
-  nested=false
-  for t in "${cross_candidates[@]}"; do
-    case "$d" in
-      "$t"/*) nested=true; break ;;
-    esac
+if (( ${#incremental_dirs[@]} > 0 )); then
+  for d in "${incremental_dirs[@]}"; do
+    nested=false
+    if (( ${#cross_candidates[@]} > 0 )); then
+      for t in "${cross_candidates[@]}"; do
+        case "$d" in
+          "$t"/*) nested=true; break ;;
+        esac
+      done
+    fi
+    [[ "$nested" == false ]] && candidates+=("$d")
   done
-  [[ "$nested" == false ]] && candidates+=("$d")
-done
-candidates+=("${cross_candidates[@]}")
+fi
+if (( ${#cross_candidates[@]} > 0 )); then
+  candidates+=("${cross_candidates[@]}")
+fi
 [[ -d "$TARGET_DIR/tmp" ]] && candidates+=("$TARGET_DIR/tmp")
 
 byte_count() { # dir -> whole KiB as a plain integer (du -sk, no suffix)
@@ -126,11 +139,13 @@ fmt_kib() { # KiB -> human string
 total=0
 echo "=== Dry run: $((${#candidates[@]})) disposable candidates under target/ ==="
 if [[ "$APPLY" == 1 ]]; then echo "(apply mode)"; else echo "(dry run — nothing will be deleted; pass --apply to delete)"; fi
-for c in "${candidates[@]}"; do
-  size=$(byte_count "$c")
-  total=$((total + size))
-  printf '  %8s  %s\n' "$(fmt_kib "$size")" "${c#$TARGET_DIR/}"
-done
+if (( ${#candidates[@]} > 0 )); then
+  for c in "${candidates[@]}"; do
+    size=$(byte_count "$c")
+    total=$((total + size))
+    printf '  %8s  %s\n' "$(fmt_kib "$size")" "${c#$TARGET_DIR/}"
+  done
+fi
 if [[ ${#candidates[@]} -eq 0 ]]; then
   echo "  (none)"
 fi
@@ -164,10 +179,12 @@ if [[ "$have_artifact" == false ]]; then
 fi
 
 freed=0
-for c in "${candidates[@]}"; do
-  size=$(byte_count "$c")
-  echo "Removing ${c#$TARGET_DIR/} ($(fmt_kib "$size")) ..."
-  rm -rf -- "$c"
-  freed=$((freed + size))
-done
+if (( ${#candidates[@]} > 0 )); then
+  for c in "${candidates[@]}"; do
+    size=$(byte_count "$c")
+    echo "Removing ${c#$TARGET_DIR/} ($(fmt_kib "$size")) ..."
+    rm -rf -- "$c"
+    freed=$((freed + size))
+  done
+fi
 echo "Done: reclaimed $(fmt_kib "$freed") from target/."
