@@ -30,6 +30,18 @@ other Macs):
 SKIP_NOTARIZATION=1 scripts/release/release-local.sh 0.3.0
 ```
 
+After a successful release, the cargo-swift cross-target trees in `target/`
+(several GiB per platform) are disposable once `dist/` holds the DMG.
+Reclaim them explicitly — never automatically:
+
+```bash
+scripts/rust/cleanup-target.sh         # dry run: what it would remove
+scripts/rust/cleanup-target.sh --apply # delete (keeps target/debug + target/release)
+```
+
+See `docs/rust-build-space.md` for what it retains and its guards. Release
+scripts intentionally never run it.
+
 This machine has to be on the current Xcode/macOS generation — the same one the
 `macos-26` runner uses — because dev builds only ever run against the current
 SDK.

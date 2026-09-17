@@ -9,3 +9,35 @@ members = ["crates/kiem-core", "crates/kiem-cli", "crates/kiem-ffi", "crates/kie
 # runtime and networking deps). `kiem-core` stays publishable (no app-specific
 # assumptions) — it may become a standalone open-source project once an
 # external consumer exists.
+
+# --- Space-conscious build policy (see docs/rust-build-space.md) ---
+# The dev profile is the one that grew target/ to ~45 GiB: it drives plain
+# `cargo build`/`cargo test`/`cargo clippy` AND cargo-swift's KiemKit
+# builds, so it multiplies across every cross-target tree
+# (target/{aarch64,x86_64}-apple-*, target/universal-*).
+#
+# 1. incremental = false: cargo's incremental state is the single largest
+#    consumer (multi-GiB per profile per target) and it is pure cache —
+#    cargo regenerates it on demand. Warm rebuilds get slower; disk growth
+#    stops. (Release builds already default to incremental off.)
+# 2. Dependencies compile with line tables only (debuginfo=1): backtraces
+#    and line numbers stay readable while roughly halving the size of
+#    iroh/tantivy-sized objects. Workspace crates keep full debuginfo
+#    (debug = true) so lldb breakpoints on first-party code are unaffected.
+#    This matches the widely used "fast compiles" profile shape.
+# Release is deliberately untouched: scripts/release/*.sh depend on its
+# current output paths and behavior.
+[profile.dev]
+incremental = false
+
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+[profile.dev.package.kiem-core]
+debug = true
+[profile.dev.package.kiem-cli]
+debug = true
+[profile.dev.package.kiem-ffi]
+debug = true
+[profile.dev.package.kiem-sync]
+debug = true

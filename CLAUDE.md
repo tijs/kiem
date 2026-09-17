@@ -57,6 +57,12 @@ cd apple && xcodegen generate     # regenerate Kiem.xcodeproj after editing proj
 xcodebuild -project Kiem.xcodeproj -scheme Kiem build | xcsift
 ```
 
+Dev builds skip incremental state and build dependencies with line tables
+only (first-party crates keep full symbols) — see `docs/rust-build-space.md`.
+After a build that regenerated KiemKit or produced a DMG, reclaim the
+disposable cargo targets with `scripts/rust/cleanup-target.sh` (dry run by
+default; `--apply` deletes — read the header first).
+
 A pre-build script phase fails the Xcode build if `crates/*/src/*.rs` is newer than the
 embedded `apple/KiemKit/` — so a stale core can no longer silently clobber metadata; you
 get a red build error pointing at `build-kiemkit.sh` instead.
