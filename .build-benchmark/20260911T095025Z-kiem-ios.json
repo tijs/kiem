@@ -1,0 +1,483 @@
+{
+  "schema_version": "1.1.0",
+  "created_at": "2026-09-11T09:51:01.717756+00:00",
+  "build": {
+    "entrypoint": "project",
+    "path": "apple/Kiem.xcodeproj",
+    "scheme": "Kiem iOS",
+    "configuration": "Debug",
+    "destination": "platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027",
+    "derived_data_path": ".build-benchmark/DerivedData",
+    "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData"
+  },
+  "environment": {
+    "host": "havelok.local",
+    "macos_version": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "xcode_version": "Xcode 26.6\nBuild version 17F113",
+    "cwd": "/Users/tijs/projects/kiem/kiem-app"
+  },
+  "runs": {
+    "clean": [
+      {
+        "id": "clean-1",
+        "build_type": "clean",
+        "duration_seconds": 4.908,
+        "success": true,
+        "exit_code": 0,
+        "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData build -showBuildTimingSummary",
+        "raw_log_path": ".build-benchmark/20260911T095025Z-kiem-ios-clean-1.log",
+        "timing_summary_categories": [
+          {
+            "name": "SwiftCompile",
+            "seconds": 9.334,
+            "task_count": 21
+          },
+          {
+            "name": "Ld",
+            "seconds": 1.119,
+            "task_count": 5
+          },
+          {
+            "name": "CompileAssetCatalogVariant",
+            "seconds": 0.931,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftEmitModule",
+            "seconds": 0.929,
+            "task_count": 3
+          },
+          {
+            "name": "SwiftDriver",
+            "seconds": 0.488,
+            "task_count": 3
+          },
+          {
+            "name": "CodeSign",
+            "seconds": 0.309,
+            "task_count": 3
+          },
+          {
+            "name": "PhaseScriptExecution",
+            "seconds": 0.168,
+            "task_count": 1
+          },
+          {
+            "name": "ExtractAppIntentsMetadata",
+            "seconds": 0.05,
+            "task_count": 3
+          },
+          {
+            "name": "ConstructStubExecutorLinkFileList",
+            "seconds": 0.041,
+            "task_count": 1
+          },
+          {
+            "name": "CopySwiftLibs",
+            "seconds": 0.034,
+            "task_count": 1
+          },
+          {
+            "name": "Copy",
+            "seconds": 0.026,
+            "task_count": 14
+          },
+          {
+            "name": "AppIntentsSSUTraining",
+            "seconds": 0.014,
+            "task_count": 1
+          },
+          {
+            "name": "RegisterExecutionPolicyException",
+            "seconds": 0.013,
+            "task_count": 3
+          },
+          {
+            "name": "GenerateAssetSymbols",
+            "seconds": 0.012,
+            "task_count": 1
+          },
+          {
+            "name": "WriteAuxiliaryFile",
+            "seconds": 0.007,
+            "task_count": 33
+          },
+          {
+            "name": "ProcessProductPackagingDER",
+            "seconds": 0.006,
+            "task_count": 1
+          },
+          {
+            "name": "ProcessInfoPlistFile",
+            "seconds": 0.006,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftDriver Compilation Requirements",
+            "seconds": 0.002,
+            "task_count": 3
+          },
+          {
+            "name": "LinkAssetCatalog",
+            "seconds": 0.002,
+            "task_count": 1
+          },
+          {
+            "name": "Touch",
+            "seconds": 0.002,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftDriver Compilation",
+            "seconds": 0.001,
+            "task_count": 3
+          },
+          {
+            "name": "SwiftMergeGeneratedHeaders",
+            "seconds": 0.001,
+            "task_count": 3
+          },
+          {
+            "name": "ProcessProductPackaging",
+            "seconds": 0.001,
+            "task_count": 1
+          },
+          {
+            "name": "Validate",
+            "seconds": 0.0,
+            "task_count": 1
+          }
+        ]
+      },
+      {
+        "id": "clean-2",
+        "build_type": "clean",
+        "duration_seconds": 4.891,
+        "success": true,
+        "exit_code": 0,
+        "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData build -showBuildTimingSummary",
+        "raw_log_path": ".build-benchmark/20260911T095025Z-kiem-ios-clean-2.log",
+        "timing_summary_categories": [
+          {
+            "name": "SwiftCompile",
+            "seconds": 9.493,
+            "task_count": 21
+          },
+          {
+            "name": "Ld",
+            "seconds": 1.112,
+            "task_count": 5
+          },
+          {
+            "name": "CompileAssetCatalogVariant",
+            "seconds": 0.966,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftEmitModule",
+            "seconds": 0.837,
+            "task_count": 3
+          },
+          {
+            "name": "SwiftDriver",
+            "seconds": 0.481,
+            "task_count": 3
+          },
+          {
+            "name": "CodeSign",
+            "seconds": 0.303,
+            "task_count": 3
+          },
+          {
+            "name": "PhaseScriptExecution",
+            "seconds": 0.24,
+            "task_count": 1
+          },
+          {
+            "name": "ExtractAppIntentsMetadata",
+            "seconds": 0.049,
+            "task_count": 3
+          },
+          {
+            "name": "ConstructStubExecutorLinkFileList",
+            "seconds": 0.041,
+            "task_count": 1
+          },
+          {
+            "name": "CopySwiftLibs",
+            "seconds": 0.034,
+            "task_count": 1
+          },
+          {
+            "name": "Copy",
+            "seconds": 0.022,
+            "task_count": 14
+          },
+          {
+            "name": "RegisterExecutionPolicyException",
+            "seconds": 0.016,
+            "task_count": 3
+          },
+          {
+            "name": "AppIntentsSSUTraining",
+            "seconds": 0.014,
+            "task_count": 1
+          },
+          {
+            "name": "GenerateAssetSymbols",
+            "seconds": 0.012,
+            "task_count": 1
+          },
+          {
+            "name": "ProcessProductPackagingDER",
+            "seconds": 0.007,
+            "task_count": 1
+          },
+          {
+            "name": "WriteAuxiliaryFile",
+            "seconds": 0.006,
+            "task_count": 33
+          },
+          {
+            "name": "ProcessInfoPlistFile",
+            "seconds": 0.004,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftDriver Compilation Requirements",
+            "seconds": 0.002,
+            "task_count": 3
+          },
+          {
+            "name": "LinkAssetCatalog",
+            "seconds": 0.002,
+            "task_count": 1
+          },
+          {
+            "name": "Touch",
+            "seconds": 0.002,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftMergeGeneratedHeaders",
+            "seconds": 0.001,
+            "task_count": 3
+          },
+          {
+            "name": "SwiftDriver Compilation",
+            "seconds": 0.001,
+            "task_count": 3
+          },
+          {
+            "name": "ProcessProductPackaging",
+            "seconds": 0.001,
+            "task_count": 1
+          },
+          {
+            "name": "Validate",
+            "seconds": 0.0,
+            "task_count": 1
+          }
+        ]
+      },
+      {
+        "id": "clean-3",
+        "build_type": "clean",
+        "duration_seconds": 4.703,
+        "success": true,
+        "exit_code": 0,
+        "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData build -showBuildTimingSummary",
+        "raw_log_path": ".build-benchmark/20260911T095025Z-kiem-ios-clean-3.log",
+        "timing_summary_categories": [
+          {
+            "name": "SwiftCompile",
+            "seconds": 9.583,
+            "task_count": 21
+          },
+          {
+            "name": "Ld",
+            "seconds": 1.041,
+            "task_count": 5
+          },
+          {
+            "name": "SwiftEmitModule",
+            "seconds": 1.0,
+            "task_count": 3
+          },
+          {
+            "name": "CompileAssetCatalogVariant",
+            "seconds": 0.9,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftDriver",
+            "seconds": 0.49,
+            "task_count": 3
+          },
+          {
+            "name": "CodeSign",
+            "seconds": 0.233,
+            "task_count": 3
+          },
+          {
+            "name": "PhaseScriptExecution",
+            "seconds": 0.145,
+            "task_count": 1
+          },
+          {
+            "name": "ExtractAppIntentsMetadata",
+            "seconds": 0.051,
+            "task_count": 3
+          },
+          {
+            "name": "ConstructStubExecutorLinkFileList",
+            "seconds": 0.042,
+            "task_count": 1
+          },
+          {
+            "name": "CopySwiftLibs",
+            "seconds": 0.035,
+            "task_count": 1
+          },
+          {
+            "name": "Copy",
+            "seconds": 0.026,
+            "task_count": 14
+          },
+          {
+            "name": "RegisterExecutionPolicyException",
+            "seconds": 0.017,
+            "task_count": 3
+          },
+          {
+            "name": "AppIntentsSSUTraining",
+            "seconds": 0.013,
+            "task_count": 1
+          },
+          {
+            "name": "GenerateAssetSymbols",
+            "seconds": 0.01,
+            "task_count": 1
+          },
+          {
+            "name": "WriteAuxiliaryFile",
+            "seconds": 0.007,
+            "task_count": 33
+          },
+          {
+            "name": "ProcessInfoPlistFile",
+            "seconds": 0.007,
+            "task_count": 1
+          },
+          {
+            "name": "ProcessProductPackagingDER",
+            "seconds": 0.007,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftDriver Compilation Requirements",
+            "seconds": 0.002,
+            "task_count": 3
+          },
+          {
+            "name": "Touch",
+            "seconds": 0.002,
+            "task_count": 1
+          },
+          {
+            "name": "LinkAssetCatalog",
+            "seconds": 0.001,
+            "task_count": 1
+          },
+          {
+            "name": "SwiftMergeGeneratedHeaders",
+            "seconds": 0.001,
+            "task_count": 3
+          },
+          {
+            "name": "SwiftDriver Compilation",
+            "seconds": 0.001,
+            "task_count": 3
+          },
+          {
+            "name": "ProcessProductPackaging",
+            "seconds": 0.001,
+            "task_count": 1
+          },
+          {
+            "name": "Validate",
+            "seconds": 0.0,
+            "task_count": 1
+          }
+        ]
+      }
+    ],
+    "incremental": [
+      {
+        "id": "zero-change-1",
+        "build_type": "zero-change",
+        "duration_seconds": 0.777,
+        "success": true,
+        "exit_code": 0,
+        "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData build -showBuildTimingSummary",
+        "raw_log_path": ".build-benchmark/20260911T095025Z-kiem-ios-zero-change-1.log",
+        "timing_summary_categories": [
+          {
+            "name": "PhaseScriptExecution",
+            "seconds": 0.011,
+            "task_count": 1
+          }
+        ]
+      },
+      {
+        "id": "zero-change-2",
+        "build_type": "zero-change",
+        "duration_seconds": 0.799,
+        "success": true,
+        "exit_code": 0,
+        "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData build -showBuildTimingSummary",
+        "raw_log_path": ".build-benchmark/20260911T095025Z-kiem-ios-zero-change-2.log",
+        "timing_summary_categories": [
+          {
+            "name": "PhaseScriptExecution",
+            "seconds": 0.011,
+            "task_count": 1
+          }
+        ]
+      },
+      {
+        "id": "zero-change-3",
+        "build_type": "zero-change",
+        "duration_seconds": 0.786,
+        "success": true,
+        "exit_code": 0,
+        "command": "xcodebuild -project apple/Kiem.xcodeproj -scheme \"Kiem iOS\" -configuration Debug -destination \"platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027\" -derivedDataPath .build-benchmark/DerivedData build -showBuildTimingSummary",
+        "raw_log_path": ".build-benchmark/20260911T095025Z-kiem-ios-zero-change-3.log",
+        "timing_summary_categories": [
+          {
+            "name": "PhaseScriptExecution",
+            "seconds": 0.011,
+            "task_count": 1
+          }
+        ]
+      }
+    ]
+  },
+  "summary": {
+    "clean": {
+      "count": 3,
+      "min_seconds": 4.703,
+      "max_seconds": 4.908,
+      "median_seconds": 4.891,
+      "average_seconds": 4.834
+    },
+    "incremental": {
+      "count": 3,
+      "min_seconds": 0.777,
+      "max_seconds": 0.799,
+      "median_seconds": 0.786,
+      "average_seconds": 0.787
+    }
+  },
+  "notes": []
+}

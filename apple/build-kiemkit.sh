@@ -1,6 +1,7 @@
 #!/bin/sh
 # Regenerate apple/KiemKit (XCFramework + Swift package) from crates/kiem-ffi.
-# Usage: apple/build-kiemkit.sh [--release] [extra cargo-swift args]
+# Usage: apple/build-kiemkit.sh [--ios-simulator] [--release] [extra cargo-swift args]
+# --ios-simulator builds only the host Mac's simulator architecture for fast local use.
 # KiemKit is generated output — never edit it by hand.
 set -eu
 
@@ -29,7 +30,22 @@ export IPHONEOS_DEPLOYMENT_TARGET=26.0
 # cargo-swift itself passes the iOS SDK and target-linker flags the cdylib
 # needs (plain `cargo build --target aarch64-apple-ios` can't link cdylib for
 # iOS — those failing links are why we route through cargo-swift here).
-cargo swift package --platforms macos --platforms ios --name KiemKit --accept-all --silent "$@"
+if [ "${1:-}" = "--ios-simulator" ]; then
+    shift
+    case "$(uname -m)" in
+    arm64) sim_target=aarch64-apple-ios-sim ;;
+    x86_64) sim_target=x86_64-apple-ios ;;
+    *)
+        echo "Unsupported host architecture: $(uname -m)" >&2
+        exit 1
+        ;;
+    esac
+    set -- --target "$sim_target" "$@"
+else
+    set -- --platforms macos --platforms ios "$@"
+fi
+
+cargo swift package --name KiemKit --accept-all --silent "$@"
 rm -rf "$repo_root/apple/KiemKit"
 mv KiemKit "$repo_root/apple/KiemKit"
 echo "KiemKit regenerated at apple/KiemKit"

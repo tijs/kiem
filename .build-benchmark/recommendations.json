@@ -1,0 +1,58 @@
+{
+  "recommendations": [
+    {
+      "title": "Add a simulator-only KiemKit development build",
+      "wait_time_impact": "Expected to cut first-time local KiemKit regeneration substantially; the exact wall-clock reduction is uncertain until benchmarked, but it avoids four of the five architecture builds used by the current universal package.",
+      "actionability": "repo-local",
+      "category": "build-script",
+      "observed_evidence": [
+        "apple/build-kiemkit.sh always packages macOS and iOS universally, even when the developer only needs an arm64 iOS Simulator slice.",
+        "The current output contains macOS arm64+x86_64, iOS arm64, and iOS Simulator arm64+x86_64 slices and is 3.1 GB.",
+        "Cargo has separate output trees for five Apple target triples; kiem-ffi's dependency graph contains 478 unique normal dependencies.",
+        "cargo-swift 0.11.1 supports --target aarch64-apple-ios-sim, while release scripts can keep using the full universal build."
+      ],
+      "estimated_impact": "High for fresh/stale KiemKit generation; no effect on ordinary Xcode builds once KiemKit exists",
+      "confidence": "High that less work is performed; wall-clock delta needs a controlled benchmark",
+      "approval_required": true,
+      "benchmark_verification_status": "Not yet verified",
+      "scope": "apple/build-kiemkit.sh local-development path only",
+      "affected_files": ["apple/build-kiemkit.sh"],
+      "risk_level": "Low if opt-in and release/archive paths remain universal"
+    },
+    {
+      "title": "Enable Xcode compilation caching",
+      "wait_time_impact": "Measured by the skill at 5-14% faster clean builds across tested projects; on this 4.891s clean baseline that is roughly 0.2-0.7s, with the benefit compounding during branch switches and Clean Build Folder.",
+      "actionability": "repo-local",
+      "category": "build-settings",
+      "observed_evidence": [
+        "Xcode 26.6 resolves no COMPILATION_CACHE_ENABLE_CACHING value for the Kiem iOS target, so Swift/Clang compilation caching is not enabled.",
+        "SwiftCompile is the largest clean-build category, although its 9.47s average task time is parallelized inside a 4.891s wall-clock build.",
+        "The installed skill calls this COMPILATION_CACHING; Xcode 26.6's actual umbrella build-setting key is COMPILATION_CACHE_ENABLE_CACHING."
+      ],
+      "estimated_impact": "Low absolute clean-build improvement because the project is already small and fast",
+      "confidence": "Medium",
+      "approval_required": true,
+      "benchmark_verification_status": "Not yet verified",
+      "scope": "Shared XcodeGen build settings",
+      "affected_files": ["apple/project.yml"],
+      "risk_level": "Low"
+    },
+    {
+      "title": "Enable eager linking for Debug",
+      "wait_time_impact": "Impact on wait time is uncertain -- likely below 0.5s on the current 4.891s clean build; re-benchmark after applying to confirm.",
+      "actionability": "repo-local",
+      "category": "build-settings",
+      "observed_evidence": [
+        "EAGER_LINKING resolves to NO for Debug.",
+        "Linking accounts for about 1.1s of aggregate clean-build task time, but much of the build is already parallelized."
+      ],
+      "estimated_impact": "Low",
+      "confidence": "Low to medium",
+      "approval_required": true,
+      "benchmark_verification_status": "Not yet verified",
+      "scope": "Debug configuration",
+      "affected_files": ["apple/project.yml"],
+      "risk_level": "Low"
+    }
+  ]
+}

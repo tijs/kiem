@@ -31,5 +31,9 @@ xcuserdata/
 /dist/
 /build/
 
+# Local Xcode benchmark logs and build data (summaries stay versioned)
+/.build-benchmark/*.log
+/.build-benchmark/*DerivedData/
+
 # pi agent/subagent artifacts (local session state, not versioned)
 .pi-subagents/

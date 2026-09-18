@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "created_at": "2026-09-11T09:51:32.273062+00:00",
+  "type": "compilation-diagnostics",
+  "build": {
+    "entrypoint": "project",
+    "path": "apple/Kiem.xcodeproj",
+    "scheme": "Kiem iOS",
+    "configuration": "Debug",
+    "destination": "platform=iOS Simulator,id=90085449-E732-4F61-A7DB-FA3B1302F027"
+  },
+  "threshold_ms": 100,
+  "build_duration_seconds": 1.06,
+  "build_success": false,
+  "raw_log_path": ".build-benchmark/20260911T095130Z-kiem-ios-diagnostics.log",
+  "warnings": [],
+  "summary": {
+    "total_warnings": 0,
+    "function_body_warnings": 0,
+    "expression_warnings": 0,
+    "slowest_ms": 0
+  },
+  "per_file_timings": []
+}

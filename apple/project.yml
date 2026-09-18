@@ -2,6 +2,12 @@
 #   cd apple && xcodegen generate
 # Prerequisite: apple/build-kiemkit.sh (KiemKit is generated, gitignored).
 name: Kiem
+settings:
+  base:
+    COMPILATION_CACHE_ENABLE_CACHING: YES
+  configs:
+    Debug:
+      EAGER_LINKING: YES
 options:
   bundleIdPrefix: org.tijs
   # Current-generation floor only (matches the Pulp package's macOS 26 floor);
